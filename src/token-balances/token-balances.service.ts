@@ -120,6 +120,45 @@ export class TokenBalancesService {
   // ─── Token Operations ────────────────────────────────────────────────────────
 
   /**
+   * Admin: set the boost token amount for a specific employee/year.
+   * This is an absolute assignment (not a delta). Min value is 0.
+   */
+  async updateBoostTokens(
+    userId: string,
+    year: number,
+    boostTokens: number,
+  ): Promise<TokenBalanceSummary> {
+    const balance = await this.getOrCreate(userId, year);
+    const previous = balance.boostTokens;
+    balance.boostTokens = boostTokens;
+    await this.tokenBalanceRepository.save(balance);
+    this.logger.log(
+      `Boost tokens updated for user ${userId} year ${year}: ${previous} → ${boostTokens}`,
+    );
+    return this.toSummary(balance);
+  }
+
+  /**
+   * Admin: export all token balances for a year as CSV rows.
+   */
+  async exportCsvForYear(year: number): Promise<string> {
+    const rows = await this.getAllForYear(year);
+    const header = 'Employee ID,Name,Department,Base Allocation,Boost Tokens,Used,Available';
+    const lines = rows.map((r) =>
+      [
+        r.employee.employeeId,
+        `"${r.employee.firstName} ${r.employee.lastName}"`,
+        `"${r.employee.department}"`,
+        r.allocated,
+        r.boostTokens,
+        r.used,
+        r.remaining,
+      ].join(','),
+    );
+    return [header, ...lines].join('\n');
+  }
+
+  /**
    * Deduct tokens on request approval. Throws if insufficient balance.
    */
   async deductTokens(
@@ -128,10 +167,11 @@ export class TokenBalancesService {
     amount: number,
   ): Promise<TokenBalanceSummary> {
     const balance = await this.getOrCreate(userId, year);
+    const available = balance.allocated + balance.boostTokens - balance.used;
 
-    if (balance.allocated - balance.used < amount) {
+    if (available < amount) {
       throw new BadRequestException(
-        `Insufficient token balance. Available: ${balance.allocated - balance.used}, Required: ${amount}`,
+        `Insufficient token balance. Available: ${available}, Required: ${amount}`,
       );
     }
 
