@@ -24,9 +24,9 @@ export class AuthService {
   ) {}
 
   async validateUser(identifier: string, password: string): Promise<User | null> {
-    // Find user by email or employeeId
+    // Find user by email only
     const user = await this.userRepository.findOne({
-      where: [{ email: identifier }, { employeeId: identifier }],
+      where: { email: identifier },
     });
 
     if (!user) {
@@ -92,21 +92,24 @@ export class AuthService {
   async changePassword(
     userId: string,
     changePasswordDto: ChangePasswordDto,
-  ): Promise<{ message: string }> {
+  ): Promise<{ message: string; isFirstPasswordChange: boolean }> {
     const user = await this.userRepository.findOne({ where: { id: userId } });
 
     if (!user) {
       throw new NotFoundException('User not found');
     }
 
-    // If user has a password and it's not first time, verify current password
-    if (user.password && user.isPasswordChanged && changePasswordDto.currentPassword) {
-      const isCurrentPasswordValid = await bcrypt.compare(
-        changePasswordDto.currentPassword,
+    // Track if this is first password change
+    const isFirstPasswordChange = !user.isPasswordChanged;
+
+    // If user has a password and it's not first time, verify old password
+    if (user.password && user.isPasswordChanged) {
+      const isOldPasswordValid = await bcrypt.compare(
+        changePasswordDto.oldPassword,
         user.password,
       );
 
-      if (!isCurrentPasswordValid) {
+      if (!isOldPasswordValid) {
         throw new BadRequestException('Current password is incorrect');
       }
     }
@@ -120,7 +123,11 @@ export class AuthService {
 
     await this.userRepository.save(user);
 
-    return { message: 'Password changed successfully' };
+    const message = isFirstPasswordChange
+      ? 'Password changed successfully. This is your first password change.'
+      : 'Password changed successfully';
+
+    return { message, isFirstPasswordChange };
   }
 
   async validateOAuthUser(

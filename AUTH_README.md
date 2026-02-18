@@ -1,9 +1,11 @@
 # Authentication API Documentation
 
 ## Overview
+
 The GDEC Tokens Backend uses JWT-based authentication with support for local login (email/password) and OAuth (Microsoft/Google).
 
 ## Base URL
+
 All auth endpoints are prefixed with `/api/auth`
 
 ---
@@ -11,20 +13,23 @@ All auth endpoints are prefixed with `/api/auth`
 ## 🔐 Authentication Endpoints
 
 ### 1. Local Login
+
 **POST** `/api/auth/login`
 
 Login with email or employee ID and password.
 
 **Request Body:**
+
 ```json
 {
-  "email": "user@example.com",     // or use employeeId instead
-  "employeeId": "202110-42",        // optional if email provided
+  "email": "user@example.com", // or use employeeId instead
+  "employeeId": "202110-42", // optional if email provided
   "password": "yourPassword"
 }
 ```
 
 **Response:**
+
 ```json
 {
   "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
@@ -45,6 +50,7 @@ Login with email or employee ID and password.
 ```
 
 **Status Codes:**
+
 - `200 OK` - Successful login
 - `401 Unauthorized` - Invalid credentials
 - `400 Bad Request` - Missing required fields
@@ -52,24 +58,28 @@ Login with email or employee ID and password.
 ---
 
 ### 2. Change Password
+
 **PATCH** `/api/auth/change-password`
 
 Change user password. Required after first login if `isPasswordChanged` is false.
 
 **Headers:**
+
 ```
 Authorization: Bearer <accessToken>
 ```
 
 **Request Body:**
+
 ```json
 {
   "newPassword": "newSecurePassword123!",
-  "currentPassword": "oldPassword"  // optional for first-time change
+  "currentPassword": "oldPassword" // optional for first-time change
 }
 ```
 
 **Response:**
+
 ```json
 {
   "message": "Password changed successfully"
@@ -77,6 +87,7 @@ Authorization: Bearer <accessToken>
 ```
 
 **Status Codes:**
+
 - `200 OK` - Password changed
 - `400 Bad Request` - Current password incorrect
 - `401 Unauthorized` - Not authenticated
@@ -84,11 +95,13 @@ Authorization: Bearer <accessToken>
 ---
 
 ### 3. Refresh Token
+
 **POST** `/api/auth/refresh`
 
 Get a new access token using refresh token.
 
 **Request Body:**
+
 ```json
 {
   "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
@@ -96,6 +109,7 @@ Get a new access token using refresh token.
 ```
 
 **Response:**
+
 ```json
 {
   "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
@@ -103,22 +117,26 @@ Get a new access token using refresh token.
 ```
 
 **Status Codes:**
+
 - `200 OK` - Token refreshed
 - `401 Unauthorized` - Invalid or expired refresh token
 
 ---
 
 ### 4. Get Profile
+
 **GET** `/api/auth/profile`
 
 Get full user profile with relationships.
 
 **Headers:**
+
 ```
 Authorization: Bearer <accessToken>
 ```
 
 **Response:**
+
 ```json
 {
   "id": "uuid",
@@ -141,16 +159,19 @@ Authorization: Bearer <accessToken>
 ---
 
 ### 5. Get Current User (Me)
+
 **GET** `/api/auth/me`
 
 Get basic current user info (lighter than profile).
 
 **Headers:**
+
 ```
 Authorization: Bearer <accessToken>
 ```
 
 **Response:**
+
 ```json
 {
   "id": "uuid",
@@ -171,6 +192,7 @@ Authorization: Bearer <accessToken>
 ## 🔗 OAuth Endpoints
 
 ### 6. Google OAuth
+
 **GET** `/api/auth/google`
 
 Initiates Google OAuth flow. Redirects user to Google login.
@@ -184,6 +206,7 @@ OAuth callback endpoint (handled automatically).
 ---
 
 ### 7. Microsoft OAuth
+
 **GET** `/api/auth/microsoft`
 
 Initiates Microsoft OAuth flow. Redirects user to Microsoft login.
@@ -199,6 +222,7 @@ OAuth callback endpoint (handled automatically).
 ## 🔒 Authentication Flows
 
 ### First-Time Login Flow
+
 1. User logs in with temporary password (`TempPass123!`)
 2. Backend returns `requiresPasswordChange: true`
 3. Frontend should prompt user to change password
@@ -206,6 +230,7 @@ OAuth callback endpoint (handled automatically).
 5. User can now access all features
 
 ### OAuth Login Flow
+
 1. Frontend redirects to `/api/auth/google` or `/api/auth/microsoft`
 2. User authenticates with OAuth provider
 3. Backend validates user email against database
@@ -213,6 +238,7 @@ OAuth callback endpoint (handled automatically).
 5. If email doesn't exist, login is rejected (HR must add employee first)
 
 ### Token Refresh Flow
+
 1. Access token expires (1 hour by default)
 2. Frontend calls `/auth/refresh` with refresh token
 3. Backend validates refresh token
@@ -224,6 +250,7 @@ OAuth callback endpoint (handled automatically).
 ## 🛡️ Authorization
 
 ### Role-Based Access Control
+
 Use the `@Roles()` decorator on protected routes:
 
 ```typescript
@@ -236,12 +263,14 @@ async adminOnly() {
 ```
 
 ### Available Roles
+
 - `employee` - All users have this role
 - `coach` - Can accept coaching requests
 - `approver` - Can approve token requests
 - `admin` - Full system access
 
 ### Public Routes
+
 Use the `@Public()` decorator to bypass authentication:
 
 ```typescript
@@ -302,6 +331,7 @@ MICROSOFT_TENANT=common
 ### Using cURL
 
 **Login:**
+
 ```bash
 curl -X POST http://localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
@@ -309,12 +339,14 @@ curl -X POST http://localhost:3000/api/auth/login \
 ```
 
 **Get Profile:**
+
 ```bash
 curl http://localhost:3000/api/auth/me \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
 
 **Change Password:**
+
 ```bash
 curl -X PATCH http://localhost:3000/api/auth/change-password \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
@@ -337,6 +369,7 @@ All errors follow this format:
 ```
 
 **Common Error Codes:**
+
 - `400` - Bad Request (validation failed)
 - `401` - Unauthorized (invalid credentials or token)
 - `403` - Forbidden (insufficient permissions)
@@ -350,11 +383,9 @@ All errors follow this format:
 1. **Access Token**: Expires in 1 hour
    - Used for API requests
    - Stored in memory (not localStorage)
-   
 2. **Refresh Token**: Expires in 7 days
    - Used to get new access tokens
    - Can be stored in httpOnly cookie or secure storage
-   
 3. **Token Rotation**: When refresh token is used, consider issuing a new refresh token for enhanced security
 
 ---

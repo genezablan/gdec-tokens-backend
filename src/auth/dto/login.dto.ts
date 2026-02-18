@@ -16,14 +16,15 @@ export class LoginDto {
 }
 
 export class ChangePasswordDto {
-  @IsNotEmpty()
   @IsString()
+  @IsNotEmpty()
+  @MinLength(8)
+  oldPassword: string;
+
+  @IsString()
+  @IsNotEmpty()
   @MinLength(8)
   newPassword: string;
-
-  @IsOptional()
-  @IsString()
-  currentPassword?: string;
 }
 
 export class OAuthCallbackDto {

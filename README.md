@@ -1,98 +1,229 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# GDEC Tokens Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A NestJS-based backend system for managing internal company tokens. Employees receive 6 tokens at the beginning of each year to use for Task Offloading, Internal Coaching, or Learning Subsidies.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## 🎯 System Overview
 
-## Description
+The GDEC Tokens System allows employees to:
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- Use tokens for various services (Task Offloading, Coaching, Learning Subsidy)
+- Submit token requests with an approval workflow
+- Track token usage and balance throughout the year
+- Manage employee roles (Employee, Coach, Approver, Admin)
 
-## Project setup
+## 🚀 Tech Stack
 
-```bash
-$ npm install
-```
+- **Framework**: NestJS 11.0.1
+- **Database**: PostgreSQL with TypeORM 0.3.28
+- **Authentication**: JWT + Passport.js (Local & OAuth ready)
+- **Validation**: class-validator & class-transformer
+- **Password Hashing**: bcrypt
+- **Excel Processing**: xlsx (for employee data import)
 
-## Compile and run the project
+## 📚 Documentation
+
+- **[Login API Guide](./docs/LOGIN_GUIDE.md)** - Simple, copy-paste ready login flow for AI agents or quick integration
+- **[Authentication Module Guide](./docs/auth-module-guide.md)** - Complete frontend implementation guide for authentication, including API reference, data models, test commands, and integration requirements
+
+## ⚡ Quick Start
+
+### 1. Install Dependencies
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+npm install
 ```
 
-## Run tests
+### 2. Database Setup
+
+Create a PostgreSQL database and configure your `.env` file:
+
+```env
+# Database Configuration
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_USERNAME=postgres
+DB_PASSWORD=your_password
+DB_NAME=gdec_tokens
+
+# JWT Configuration
+JWT_SECRET=your_jwt_secret_key_here
+JWT_EXPIRES_IN=7d
+JWT_REFRESH_EXPIRES_IN=7d
+
+# OAuth (optional, currently disabled)
+# GOOGLE_CLIENT_ID=your_google_client_id
+# GOOGLE_CLIENT_SECRET=your_google_client_secret
+# MICROSOFT_CLIENT_ID=your_microsoft_client_id
+# MICROSOFT_CLIENT_SECRET=your_microsoft_client_secret
+```
+
+### 3. Run Migrations
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+npm run migration:run
 ```
 
-## Deployment
+### 4. Import Employee Data (Optional)
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+If you have employee data in Excel format:
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+npm run import:employees
+npm run import:ops-gmail
+npm run link:supervisors
+npm run verify:data
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+### 5. Start the Server
 
-## Resources
+```bash
+# Development with watch mode
+npm run start:dev
 
-Check out a few resources that may come in handy when working with NestJS:
+# Production mode
+npm run start:prod
+```
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+The API will be available at `http://localhost:3000/api`
 
-## Support
+### 6. Test Authentication
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+```bash
+curl -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "gm.zablan@greatdealscorp.com", "password": "TempPass123!"}'
+```
 
-## Stay in touch
+## 🏗️ Project Structure
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+```
+src/
+├── auth/                    # Authentication module
+│   ├── decorators/         # @Public, @Roles, @CurrentUser decorators
+│   ├── dto/                # Login, ChangePassword DTOs
+│   ├── guards/             # JWT, Local, Roles guards
+│   ├── interfaces/         # JWT payload interfaces
+│   └── strategies/         # Passport strategies (JWT, Local)
+├── common/
+│   └── enums/              # User roles, status, gender, etc.
+├── entities/               # TypeORM entities
+│   └── user.entity.ts      # User/Employee entity
+├── migrations/             # TypeORM migrations
+├── scripts/                # Data import scripts
+├── app.module.ts           # Main application module
+├── data-source.ts          # TypeORM configuration
+└── main.ts                 # Application entry point
 
-## License
+docs/
+├── LOGIN_GUIDE.md         # Simple login API guide (copy-paste ready)
+└── auth-module-guide.md   # Comprehensive frontend implementation guide
+```
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+## 📦 Available NPM Scripts
+
+### Development
+
+```bash
+npm run start           # Start application
+npm run start:dev       # Start with watch mode
+npm run start:debug     # Start with debug mode
+```
+
+### Database Migrations
+
+```bash
+npm run migration:generate  # Generate new migration
+npm run migration:run       # Run pending migrations
+npm run migration:revert    # Revert last migration
+```
+
+### Data Import
+
+```bash
+npm run import:employees    # Import from main employee sheet
+npm run import:ops-gmail    # Import from Ops Gmail sheet
+npm run link:supervisors    # Link supervisor relationships
+npm run verify:data         # Verify data integrity
+```
+
+### Testing
+
+```bash
+npm test                # Unit tests
+npm run test:e2e        # E2E tests
+npm run test:cov        # Test coverage
+```
+
+### Build
+
+```bash
+npm run build           # Build for production
+npm run start:prod      # Run production build
+```
+
+## 🔐 Authentication
+
+The system uses JWT-based authentication with the following features:
+
+- **Local Authentication**: Login with email
+- **Password Management**: First-time password change enforcement
+- **Token Refresh**: Automatic token refresh mechanism
+- **Role-Based Access Control**: Employee, Coach, Approver, Admin roles
+- **OAuth Ready**: Google and Microsoft OAuth prepared (currently disabled)
+- **Long-lived Tokens**: Access tokens valid for 7 days
+
+**Default Test Credentials:**
+
+- Email: `gm.zablan@greatdealscorp.com`
+- Employee ID: `202409-09`
+- Password: `TempPass123!`
+
+See [Authentication Module Guide](./docs/auth-module-guide.md) for complete API documentation and frontend implementation guide.
+
+## 🔧 Current Features
+
+### ✅ Completed
+
+- User/Employee entity with relationships
+- JWT authentication (access & refresh tokens)
+- Local login (email or employee ID)
+- Password change workflow with first-time detection
+- Role-based access control with guards
+- Supervisor hierarchy (356 relationships established)
+- Employee data import from Excel (395 employees)
+- Protected routes with decorators (@Public, @Roles, @CurrentUser)
+- Global authentication guards
+
+### 🚧 In Progress
+
+- Token balance management
+- Token request submission
+- Approval workflow system
+
+### 📋 Planned
+
+- Token allocation (6 per employee per year)
+- Request types: Task Offloading, Coaching, Learning Subsidy
+- Multi-level approval routing
+- Transaction history and audit trail
+- Dashboard and reporting
+
+## 📊 Database Schema
+
+### Users Table
+
+- Employee information and authentication
+- Self-referencing supervisor relationship
+- Role assignments (employee, coach, approver, admin)
+- OAuth provider support (Google, Microsoft)
+- Password change tracking
+
+See [TypeORM migrations](./src/migrations) for complete schema.
+
+## 🤝 Contributing
+
+This is an internal company project. For questions or support, contact the development team.
+
+## 📄 License
+
+Proprietary - Great Deals E-Commerce Corporation
