@@ -10,7 +10,7 @@ import {
   ParseUUIDPipe,
   ParseIntPipe,
 } from '@nestjs/common';
-import { Response } from 'express';
+import type { Response } from 'express';
 import { TokenBalancesService } from './token-balances.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';

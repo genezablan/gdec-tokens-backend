@@ -14,12 +14,12 @@ Base URL: `http://localhost:3000/api`
 
 All endpoints require `Authorization: Bearer <token>` header.
 
-| Method    | Endpoint                                   | Purpose                                                    | Auth Required |
-| --------- | ------------------------------------------ | ---------------------------------------------------------- | ------------- |
-| `GET`     | `/token-balances?year=<year>`              | List all employee balances for a year (defaults to current) | Admin         |
-| `PATCH`   | `/token-balances/:userId/boost?year=<year>` | Set boost tokens for one employee (absolute value)         | Admin         |
-| `GET`     | `/token-balances/export?year=<year>`       | Download all balances as CSV                               | Admin         |
-| `POST`    | `/token-balances/initialize`               | Seed 6-token balances for all active employees             | Admin         |
+| Method  | Endpoint                                    | Purpose                                                     | Auth Required |
+| ------- | ------------------------------------------- | ----------------------------------------------------------- | ------------- |
+| `GET`   | `/token-balances?year=<year>`               | List all employee balances for a year (defaults to current) | Admin         |
+| `PATCH` | `/token-balances/:userId/boost?year=<year>` | Set boost tokens for one employee (absolute value)          | Admin         |
+| `GET`   | `/token-balances/export?year=<year>`        | Download all balances as CSV                                | Admin         |
+| `POST`  | `/token-balances/initialize`                | Seed 6-token balances for all active employees              | Admin         |
 
 ---
 
@@ -29,13 +29,13 @@ All endpoints require `Authorization: Bearer <token>` header.
 
 ```typescript
 interface EmployeeTokenRow {
-  id: string;           // TokenBalance UUID
-  userId: string;       // User UUID
+  id: string; // TokenBalance UUID
+  userId: string; // User UUID
   year: number;
-  allocated: number;    // Base allocation (always 6)
-  boostTokens: number;  // Extra tokens granted by admin
-  used: number;         // Tokens spent on approved requests
-  remaining: number;    // allocated + boostTokens - used
+  allocated: number; // Base allocation (always 6)
+  boostTokens: number; // Extra tokens granted by admin
+  used: number; // Tokens spent on approved requests
+  remaining: number; // allocated + boostTokens - used
   employee: {
     employeeId: string; // e.g. "GDC-001"
     firstName: string;
@@ -83,6 +83,7 @@ curl -X PATCH http://localhost:3000/api/token-balances/<USER_ID>/boost \
 ```
 
 **Response:**
+
 ```json
 {
   "id": "...",
@@ -113,6 +114,7 @@ curl -X POST http://localhost:3000/api/token-balances/initialize \
 ```
 
 **Response:**
+
 ```json
 { "created": 390, "skipped": 5 }
 ```
@@ -131,14 +133,14 @@ The page mirrors the screenshot:
 
 ### Table Columns
 
-| Column               | Source field                       | Notes                                              |
-| -------------------- | ---------------------------------- | -------------------------------------------------- |
-| Name of Employee     | `employee.firstName + lastName`    | Full name, plain text                              |
-| Department           | `employee.department`              | Greyed/muted text style                            |
-| Based allocation     | `allocated`                        | Numeric, centered                                  |
-| Available token      | `remaining`                        | Numeric, centered                                  |
-| Used token           | `used`                             | Numeric, centered                                  |
-| Boost token          | `boostTokens`                      | Inline +/− stepper (see below)                     |
+| Column           | Source field                    | Notes                          |
+| ---------------- | ------------------------------- | ------------------------------ |
+| Name of Employee | `employee.firstName + lastName` | Full name, plain text          |
+| Department       | `employee.department`           | Greyed/muted text style        |
+| Based allocation | `allocated`                     | Numeric, centered              |
+| Available token  | `remaining`                     | Numeric, centered              |
+| Used token       | `used`                          | Numeric, centered              |
+| Boost token      | `boostTokens`                   | Inline +/− stepper (see below) |
 
 ### Boost Token Stepper
 
@@ -163,6 +165,7 @@ Each row in the **Boost token** column shows:
 ### Export to CSV
 
 On click of **Export to CSV**:
+
 1. Call `GET /token-balances/export?year=<currentYear>`
 2. The backend returns a `text/csv` file — trigger a browser download:
    ```typescript
@@ -190,6 +193,7 @@ On click of **Export to CSV**:
 ### Phase 2 — Boost Token Stepper
 
 6. For each row, render a stepper:
+
    ```tsx
    <div className="flex items-center gap-2">
      <button
@@ -220,7 +224,11 @@ On click of **Export to CSV**:
        setRows((prev) =>
          prev.map((r) =>
            r.userId === userId
-             ? { ...r, boostTokens: updated.boostTokens, remaining: updated.remaining }
+             ? {
+                 ...r,
+                 boostTokens: updated.boostTokens,
+                 remaining: updated.remaining,
+               }
              : r,
          ),
        );
@@ -233,10 +241,13 @@ On click of **Export to CSV**:
 ### Phase 3 — Sort and Export
 
 8. Implement the Sort dropdown with client-side sorting:
+
    ```typescript
    const sorted = [...rows].sort((a, b) => {
-     if (sortBy === 'alphabetically') return a.employee.lastName.localeCompare(b.employee.lastName);
-     if (sortBy === 'department') return a.employee.department.localeCompare(b.employee.department);
+     if (sortBy === 'alphabetically')
+       return a.employee.lastName.localeCompare(b.employee.lastName);
+     if (sortBy === 'department')
+       return a.employee.department.localeCompare(b.employee.department);
      if (sortBy === 'mostUsed') return b.used - a.used;
      if (sortBy === 'leastAvailable') return a.remaining - b.remaining;
      return 0;
