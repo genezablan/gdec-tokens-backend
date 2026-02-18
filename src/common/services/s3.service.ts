@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 export interface UploadFileOptions {
   contentType?: string;
@@ -72,6 +73,22 @@ export class S3Service {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       throw new Error(`Failed to upload file to S3: ${errorMessage}`);
     }
+  }
+
+  /**
+   * Generates a pre-signed URL for downloading a private S3 object.
+   * URL is valid for the specified number of seconds (default: 15 minutes).
+   * The bucket does NOT need to be public.
+   */
+  async getPresignedDownloadUrl(
+    key: string,
+    expiresInSeconds = 900,
+  ): Promise<string> {
+    const command = new GetObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+    });
+    return getSignedUrl(this.s3Client, command, { expiresIn: expiresInSeconds });
   }
 
   /**

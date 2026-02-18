@@ -90,6 +90,26 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
   }
 
   /**
+   * Returns a short-lived pre-signed S3 URL for downloading the form template.
+   * URL expires in 15 minutes. The bucket does not need to be public.
+   */
+  async getDownloadUrl(id: string): Promise<{ url: string; fileName: string; expiresInSeconds: number }> {
+    const option = await this.findOne(id);
+
+    if (!option.formTemplateKey) {
+      throw new NotFoundException('No form template uploaded for this option');
+    }
+
+    const url = await this.s3Service.getPresignedDownloadUrl(option.formTemplateKey, 900);
+    return {
+      url,
+      fileName: option.formTemplateFileName,
+      expiresInSeconds: 900,
+    };
+  }
+
+
+  /**
    * Admin: upload a form template to S3 and save the URL.
    */
   async uploadFormTemplate(
@@ -128,6 +148,7 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
     );
 
     option.formTemplateUrl = result.url;
+    option.formTemplateKey = result.key;
     option.formTemplateFileName = file.originalname;
     option.updatedById = updatedById;
 

@@ -47,6 +47,9 @@ export class DevelopmentOption {
   formTemplateUrl: string;
 
   @Column({ nullable: true })
+  formTemplateKey: string; // S3 object key — used to generate pre-signed download URLs
+
+  @Column({ nullable: true })
   formTemplateFileName: string;
 
   @Column({ nullable: true })

@@ -27,15 +27,16 @@ Base URL: `http://localhost:3000/api`
 
 All endpoints require `Authorization: Bearer <token>` header.
 
-| Method  | Endpoint                            | Purpose                                              | Auth Required          |
-| ------- | ----------------------------------- | ---------------------------------------------------- | ---------------------- |
-| `GET`   | `/development-options`              | List all development options (active only)           | Any authenticated user |
-| `GET`   | `/development-options?all=true`     | List ALL options including inactive                  | Admin only             |
-| `GET`   | `/development-options/:id`          | Get a single development option by UUID              | Any authenticated user |
-| `PATCH` | `/development-options/:id`          | Update name, description, tokenCost, isActive, rules | Admin only             |
-| `PATCH` | `/development-options/:id/toggle`   | Flip isActive on/off                                 | Admin only             |
-| `POST`  | `/development-options/:id/template` | Upload/replace blank form template (multipart)       | Admin only             |
-| `POST`  | `/development-options/seed`         | Re-run seed if options are missing                   | Admin only             |
+| Method  | Endpoint                                     | Purpose                                                             | Auth Required          |
+| ------- | -------------------------------------------- | ------------------------------------------------------------------- | ---------------------- |
+| `GET`   | `/development-options`                       | List all development options (active only)                          | Any authenticated user |
+| `GET`   | `/development-options?all=true`              | List ALL options including inactive                                 | Admin only             |
+| `GET`   | `/development-options/:id`                   | Get a single development option by UUID                             | Any authenticated user |
+| `PATCH` | `/development-options/:id`                   | Update name, description, tokenCost, isActive, rules                | Admin only             |
+| `PATCH` | `/development-options/:id/toggle`            | Flip isActive on/off                                                | Admin only             |
+| `GET`   | `/development-options/:id/template/download` | Get a pre-signed download URL for the form template (15 min expiry) | Any authenticated user |
+| `POST`  | `/development-options/:id/template`          | Upload/replace blank form template (multipart)                      | Admin only             |
+| `POST`  | `/development-options/seed`                  | Re-run seed if options are missing                                  | Admin only             |
 
 ### ⚠️ Important Notes
 
@@ -61,7 +62,8 @@ interface DevelopmentOption {
   tokenCost: number; // Tokens required (admin-configurable)
   isActive: boolean; // Whether employees can request this type
   rules: TaskOffloadingRules | CoachingRules | LearningSubsidyRules;
-  formTemplateUrl: string | null; // S3 URL for blank form download
+  formTemplateUrl: string | null; // Direct S3 URL (bucket must be public — use download endpoint instead)
+  formTemplateKey: string | null; // S3 object key (used by backend to generate pre-signed URLs)
   formTemplateFileName: string | null; // Original filename for display
   updatedBy: {
     id: string;
@@ -185,7 +187,26 @@ curl -X POST http://localhost:3000/api/development-options/<ID>/template \
   -F "file=@/path/to/form-template.pdf"
 ```
 
-### 7. Manual seed (admin, run if options are missing)
+### 7. Get a pre-signed download URL for the form template
+
+```bash
+curl -X GET http://localhost:3000/api/development-options/<ID>/template/download \
+  -H "Authorization: Bearer <TOKEN>"
+```
+
+**Response:**
+
+```json
+{
+  "url": "https://gdec-tokens-development.s3.ap-southeast-1.amazonaws.com/form-templates/...?X-Amz-Signature=...",
+  "fileName": "task-offloading-form.pdf",
+  "expiresInSeconds": 900
+}
+```
+
+> The `url` is a temporary signed URL valid for **15 minutes**. Open it in a new tab to trigger the browser download. The S3 bucket does not need to be public.
+
+### 8. Manual seed (admin, run if options are missing)
 
 ```bash
 curl -X POST http://localhost:3000/api/development-options/seed \
@@ -205,7 +226,7 @@ Each card must show:
 - [ ] **Option name** (e.g. "Task Offloading")
 - [ ] **Short description** below the name
 - [ ] **Token cost badge** — gold/amber badge (e.g. "1 Token" or "2 Tokens"), positioned top-right of card or prominently near the title
-- [ ] **"Download Blank Form"** button/link — only shown when `formTemplateUrl` is not null; opens S3 URL in new tab
+- [ ] **"Download Blank Form"** button/link — only shown when `formTemplateFileName` is not null; on click, call `GET /development-options/:id/template/download`, then open the returned `url` in a new tab. Do **not** use `formTemplateUrl` directly (the bucket is private)
 - [ ] **"Request"** button — disabled if `isActive` is false
 - [ ] **Feature bullet list** — render `rules.features` as a `<ul>` of `<li>` items below the description. Example output for Task Offloading:
   ```

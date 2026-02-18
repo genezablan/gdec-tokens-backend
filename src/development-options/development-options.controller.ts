@@ -35,6 +35,16 @@ export class DevelopmentOptionsController {
   }
 
   /**
+   * GET /api/development-options/:id/template/download
+   * Returns a short-lived pre-signed S3 URL for downloading the form template.
+   * URL expires in 15 minutes. Safe for frontend to open in a new tab.
+   */
+  @Get(':id/template/download')
+  getTemplateDownloadUrl(@Param('id', ParseUUIDPipe) id: string) {
+    return this.developmentOptionsService.getDownloadUrl(id);
+  }
+
+  /**
    * GET /api/development-options/:id
    * Returns a single development option by ID.
    */
