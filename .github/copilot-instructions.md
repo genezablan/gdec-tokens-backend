@@ -180,10 +180,11 @@ RequestStatus: pending | approved | rejected | cancelled
 
 ### Approval Workflow
 
-- Submitted request → status: `pending`
-- Routes to `immediateSupervisor` (user with `approver` role); falls back to any `admin`
-- On approve: tokens deducted, email sent to requester
-- On reject: email sent with comments, tokens NOT deducted
+- Submitted request → status: `pending` → Manager (`approver` role, employee's `immediateSupervisorId`) notified
+- Manager approves → status: `manager_approved` → HR (`hr_approver` role) notified
+- HR approves → status: `approved` → tokens deducted, employee notified
+- Rejection at **either level** → status: `rejected` → tokens NOT deducted, employee notified with comment
+- Employee can cancel while status is still `pending`
 
 ---
 

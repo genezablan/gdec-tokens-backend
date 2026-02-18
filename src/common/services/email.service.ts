@@ -316,4 +316,61 @@ Please do not reply to this email.
       fromName: 'GDEC Tokens System',
     });
   }
+
+  // ─── Token Request Workflow Shortcuts ────────────────────────────────────────
+
+  /**
+   * Notify an approver (manager or HR) that a request needs their review.
+   */
+  async sendRequestNotification(
+    approverEmail: string,
+    requesterName: string,
+    requestType: string,
+    requestId: string,
+  ): Promise<void> {
+    await this.sendTokenRequestApproval(
+      approverEmail,
+      'Approver',
+      requesterName,
+      requestType,
+      1, // tokenAmount not critical for notification
+      requestId,
+    );
+  }
+
+  /**
+   * Notify the employee their request was approved.
+   */
+  async sendApprovalNotification(
+    employeeEmail: string,
+    employeeName: string,
+    requestType: string,
+  ): Promise<void> {
+    await this.sendTokenRequestStatusUpdate(
+      employeeEmail,
+      employeeName,
+      requestType,
+      1,
+      'approved',
+    );
+  }
+
+  /**
+   * Notify the employee their request was rejected with a reason.
+   */
+  async sendRejectionNotification(
+    employeeEmail: string,
+    employeeName: string,
+    requestType: string,
+    comment: string,
+  ): Promise<void> {
+    await this.sendTokenRequestStatusUpdate(
+      employeeEmail,
+      employeeName,
+      requestType,
+      1,
+      'rejected',
+      comment,
+    );
+  }
 }

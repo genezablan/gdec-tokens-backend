@@ -1,7 +1,8 @@
 export enum UserRole {
   EMPLOYEE = 'employee',
   COACH = 'coach',
-  APPROVER = 'approver',
+  APPROVER = 'approver',    // Manager-level approver (immediate supervisor)
+  HR_APPROVER = 'hr_approver', // HR second-level approver
   ADMIN = 'admin',
 }
 
@@ -37,8 +38,9 @@ export enum DevelopmentOptionType {
 }
 
 export enum RequestStatus {
-  PENDING = 'pending',
-  APPROVED = 'approved',
-  REJECTED = 'rejected',
-  CANCELLED = 'cancelled',
+  PENDING = 'pending',                    // Awaiting manager approval
+  MANAGER_APPROVED = 'manager_approved',  // Manager approved, awaiting HR
+  APPROVED = 'approved',                  // HR approved, tokens deducted
+  REJECTED = 'rejected',                  // Rejected by manager or HR
+  CANCELLED = 'cancelled',                // Cancelled by employee
 }
