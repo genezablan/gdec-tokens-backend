@@ -210,6 +210,7 @@ Frontend implementation guides live in `docs/`. Each guide covers API endpoints,
 | `docs/LOGIN_GUIDE.md`               | Auth — login, JWT usage                                    |
 | `docs/auth-module-guide.md`         | Auth — full module (login, me, change-password)            |
 | `docs/development-options-guide.md` | Development Options — cards, edit, toggle, template upload |
+| `docs/token-balances-guide.md`      | Token Balances — wallet, history, admin initialization     |
 | `docs/AWS_SERVICES_GUIDE.md`        | AWS S3 + SES service wrappers                              |
 
 When creating a new guide, follow the format in `docs/auth-module-guide.md`:
@@ -227,7 +228,7 @@ When creating a new guide, follow the format in `docs/auth-module-guide.md`:
 
 ## Pending Work
 
-- [ ] `TokenBalance` entity + module (6 tokens per employee per year)
+- [x] `TokenBalance` entity + module (6 tokens per employee per year) ✅
 - [ ] `TokenRequest` entity + module (submit, approve, reject, cancel)
 - [ ] `Users` admin module (list, update roles, toggle active)
 - [ ] Email notifications wired into approval/rejection flow

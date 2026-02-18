@@ -5,14 +5,19 @@ import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
+import { CommonModule } from './common/common.module';
+import { DevelopmentOptionsModule } from './development-options/development-options.module';
+import { TokenBalancesModule } from './token-balances/token-balances.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
+import { databaseConfig, s3Config, sesConfig } from './config';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
+      load: [databaseConfig, s3Config, sesConfig],
     }),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
@@ -30,6 +35,9 @@ import { RolesGuard } from './auth/guards/roles.guard';
       inject: [ConfigService],
     }),
     AuthModule,
+    CommonModule,
+    DevelopmentOptionsModule,
+    TokenBalancesModule,
   ],
   controllers: [AppController],
   providers: [

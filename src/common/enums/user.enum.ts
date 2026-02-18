@@ -29,3 +29,16 @@ export enum AuthProvider {
   MICROSOFT = 'microsoft',
   GOOGLE = 'google',
 }
+
+export enum DevelopmentOptionType {
+  TASK_OFFLOADING = 'task_offloading',
+  COACHING = 'coaching',
+  LEARNING_SUBSIDY = 'learning_subsidy',
+}
+
+export enum RequestStatus {
+  PENDING = 'pending',
+  APPROVED = 'approved',
+  REJECTED = 'rejected',
+  CANCELLED = 'cancelled',
+}

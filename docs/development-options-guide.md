@@ -5,12 +5,14 @@
 Implement the **Development Options** page (admin settings) and the **Request Type Cards** shown to employees when they want to spend tokens.
 
 There are exactly **3 development option types** — each is a configurable card that shows:
+
 - Name and description
 - Token cost (displayed as a gold badge)
 - Whether it is currently active
 - A downloadable blank form template (if uploaded)
 
 **Admin** users can:
+
 - Edit name, description, token cost, active status, and per-type rules
 - Toggle a type on/off (quick action without full edit)
 - Upload/replace the blank form template (PDF/DOCX)
@@ -25,15 +27,15 @@ Base URL: `http://localhost:3000/api`
 
 All endpoints require `Authorization: Bearer <token>` header.
 
-| Method | Endpoint | Purpose | Auth Required |
-|--------|----------|---------|---------------|
-| `GET` | `/development-options` | List all development options (active only) | Any authenticated user |
-| `GET` | `/development-options?all=true` | List ALL options including inactive | Admin only |
-| `GET` | `/development-options/:id` | Get a single development option by UUID | Any authenticated user |
-| `PATCH` | `/development-options/:id` | Update name, description, tokenCost, isActive, rules | Admin only |
-| `PATCH` | `/development-options/:id/toggle` | Flip isActive on/off | Admin only |
-| `POST` | `/development-options/:id/template` | Upload/replace blank form template (multipart) | Admin only |
-| `POST` | `/development-options/seed` | Re-run seed if options are missing | Admin only |
+| Method  | Endpoint                            | Purpose                                              | Auth Required          |
+| ------- | ----------------------------------- | ---------------------------------------------------- | ---------------------- |
+| `GET`   | `/development-options`              | List all development options (active only)           | Any authenticated user |
+| `GET`   | `/development-options?all=true`     | List ALL options including inactive                  | Admin only             |
+| `GET`   | `/development-options/:id`          | Get a single development option by UUID              | Any authenticated user |
+| `PATCH` | `/development-options/:id`          | Update name, description, tokenCost, isActive, rules | Admin only             |
+| `PATCH` | `/development-options/:id/toggle`   | Flip isActive on/off                                 | Admin only             |
+| `POST`  | `/development-options/:id/template` | Upload/replace blank form template (multipart)       | Admin only             |
+| `POST`  | `/development-options/seed`         | Re-run seed if options are missing                   | Admin only             |
 
 ### ⚠️ Important Notes
 
@@ -52,22 +54,22 @@ All endpoints require `Authorization: Bearer <token>` header.
 
 ```typescript
 interface DevelopmentOption {
-  id: string;                          // UUID
-  type: DevelopmentOptionType;         // 'task_offloading' | 'coaching' | 'learning_subsidy'
-  name: string;                        // Display name (admin-editable)
-  description: string | null;          // Short description (admin-editable)
-  tokenCost: number;                   // Tokens required (admin-configurable)
-  isActive: boolean;                   // Whether employees can request this type
+  id: string; // UUID
+  type: DevelopmentOptionType; // 'task_offloading' | 'coaching' | 'learning_subsidy'
+  name: string; // Display name (admin-editable)
+  description: string | null; // Short description (admin-editable)
+  tokenCost: number; // Tokens required (admin-configurable)
+  isActive: boolean; // Whether employees can request this type
   rules: TaskOffloadingRules | CoachingRules | LearningSubsidyRules;
-  formTemplateUrl: string | null;      // S3 URL for blank form download
+  formTemplateUrl: string | null; // S3 URL for blank form download
   formTemplateFileName: string | null; // Original filename for display
   updatedBy: {
     id: string;
     firstName: string;
     lastName: string;
   } | null;
-  updatedAt: string;                   // ISO datetime
-  createdAt: string;                   // ISO datetime
+  updatedAt: string; // ISO datetime
+  createdAt: string; // ISO datetime
 }
 ```
 
@@ -89,21 +91,29 @@ Each type has a different `rules` object. Always parse using the `type` field as
 // type === 'task_offloading'
 interface TaskOffloadingRules {
   consecutiveYearRepeatAllowed: boolean; // false = cannot re-apply in the year after approval
+  features: string[]; // bullet points to display on the card
+  // default: ['1 token per OTJ or special project', 'No consecutive-year repeat']
 }
 
 // type === 'coaching'
 interface CoachingRules {
-  sessionsRequired: number;   // 3
+  sessionsRequired: number; // 3
   sameCoachRequired: boolean; // true = all 3 sessions must use the same coach
+  features: string[]; // bullet points to display on the card
+  // default: ['2 tokens for 3 sessions', 'Same coach per cycle']
 }
 
 // type === 'learning_subsidy'
 interface LearningSubsidyRules {
-  subsidyPerToken: number;   // 1000 (₱1,000 per token)
-  maxSubsidyAmount: number;  // 3000 (₱3,000 max)
-  maxTokens: number;         // 3 (1–3 tokens selectable by employee)
+  subsidyPerToken: number; // 1000 (₱1,000 per token)
+  maxSubsidyAmount: number; // 3000 (₱3,000 max)
+  maxTokens: number; // 3 (1–3 tokens selectable by employee)
+  features: string[]; // bullet points to display on the card
+  // default: ['1 token equal to ₱1,000.00', 'Maximum of ₱3,000.00']
 }
 ```
+
+> **Key point:** `rules.features` is the authoritative bullet list for each card. Always render it as-is from the API — never hardcode the bullet text in the frontend.
 
 ### `UpdateDevelopmentOptionDto` (Request Body for PATCH)
 
@@ -111,7 +121,7 @@ interface LearningSubsidyRules {
 interface UpdateDevelopmentOptionDto {
   name?: string;
   description?: string;
-  tokenCost?: number;   // integer, min: 1
+  tokenCost?: number; // integer, min: 1
   isActive?: boolean;
   rules?: Record<string, unknown>; // JSON object — shape validated by admin
 }
@@ -125,24 +135,28 @@ Replace `<TOKEN>` with the JWT from `POST /api/auth/login` (admin credentials).
 Replace `<ID>` with a real UUID from the list endpoint.
 
 ### 1. List active options (employee view)
+
 ```bash
 curl -X GET http://localhost:3000/api/development-options \
   -H "Authorization: Bearer <TOKEN>"
 ```
 
 ### 2. List ALL options including inactive (admin view)
+
 ```bash
 curl -X GET "http://localhost:3000/api/development-options?all=true" \
   -H "Authorization: Bearer <TOKEN>"
 ```
 
 ### 3. Get a single option
+
 ```bash
 curl -X GET http://localhost:3000/api/development-options/<ID> \
   -H "Authorization: Bearer <TOKEN>"
 ```
 
 ### 4. Update an option (admin)
+
 ```bash
 curl -X PATCH http://localhost:3000/api/development-options/<ID> \
   -H "Authorization: Bearer <TOKEN>" \
@@ -157,12 +171,14 @@ curl -X PATCH http://localhost:3000/api/development-options/<ID> \
 ```
 
 ### 5. Toggle active status (admin)
+
 ```bash
 curl -X PATCH http://localhost:3000/api/development-options/<ID>/toggle \
   -H "Authorization: Bearer <TOKEN>"
 ```
 
 ### 6. Upload a form template (admin)
+
 ```bash
 curl -X POST http://localhost:3000/api/development-options/<ID>/template \
   -H "Authorization: Bearer <TOKEN>" \
@@ -170,6 +186,7 @@ curl -X POST http://localhost:3000/api/development-options/<ID>/template \
 ```
 
 ### 7. Manual seed (admin, run if options are missing)
+
 ```bash
 curl -X POST http://localhost:3000/api/development-options/seed \
   -H "Authorization: Bearer <TOKEN>"
@@ -184,19 +201,23 @@ curl -X POST http://localhost:3000/api/development-options/seed \
 **Layout**: 3 cards displayed in a row (or responsive grid), one per development option type.
 
 Each card must show:
+
 - [ ] **Option name** (e.g. "Task Offloading")
 - [ ] **Short description** below the name
 - [ ] **Token cost badge** — gold/amber badge (e.g. "1 Token" or "2 Tokens"), positioned top-right of card or prominently near the title
 - [ ] **"Download Blank Form"** button/link — only shown when `formTemplateUrl` is not null; opens S3 URL in new tab
 - [ ] **"Request"** button — disabled if `isActive` is false
-- [ ] Rules summary relevant to each type:
-  - Task Offloading: show the consecutive-year restriction note
-  - Coaching: show "3 sessions with the same coach"
-  - Learning Subsidy: show token range (1–3 tokens) and ₱ per token
+- [ ] **Feature bullet list** — render `rules.features` as a `<ul>` of `<li>` items below the description. Example output for Task Offloading:
+  ```
+  • 1 token per OTJ or special project
+  • No consecutive-year repeat
+  ```
+- [ ] **"Download Blank Form"** and **"Upload option for Form Template"** rows are always shown as the last two bullets (handled separately — see below)
 
 ### Admin View — Development Options Settings Page
 
 **Same 3 cards** as employee view, plus per card:
+
 - [ ] **Active/Inactive chip/badge** indicator
 - [ ] **"Edit" button** — opens an edit modal
 - [ ] **"Toggle" button** (or toggle switch) — quick active/inactive flip without opening modal
@@ -204,6 +225,7 @@ Each card must show:
 - [ ] Show current template filename if already uploaded
 
 #### Edit Modal fields:
+
 - [ ] Name (text input)
 - [ ] Description (textarea)
 - [ ] Token Cost (number input, min 1)
@@ -211,6 +233,7 @@ Each card must show:
 - [ ] Rules (read-only JSON display or per-type structured fields — see Phase 3 below)
 
 ### Shared Behavior
+
 - [ ] On load, call `GET /development-options` (or `?all=true` for admin)
 - [ ] Token costs must always be read from API — never hardcoded
 - [ ] Show loading skeleton while fetching
@@ -232,7 +255,26 @@ Each card must show:
 
 4. Apply gold/amber styling to the token cost badge (e.g. Tailwind: `bg-amber-100 text-amber-800 font-semibold`).
 
-5. Show "Download Blank Form" as an `<a href={formTemplateUrl} target="_blank">` — render only when `formTemplateUrl !== null`.
+5. Render the feature bullet list from `rules.features`:
+
+   ```tsx
+   <ul className="mt-2 space-y-1">
+     {option.rules.features.map((f, i) => (
+       <li key={i} className="flex items-start gap-2 text-sm">
+         <span>•</span>
+         <span>{f}</span>
+       </li>
+     ))}
+   </ul>
+   ```
+
+   Do **not** hardcode these strings — they come from the API and are admin-configurable.
+
+6. After the `features` list, always show two more fixed rows on every card:
+   - **Download Form Template** — `<a href={formTemplateUrl} target="_blank">` shown only when `formTemplateUrl !== null`; otherwise render as a disabled/greyed row
+   - **Upload option for Form Template** — visible to admin only (see Phase 3)
+
+7. Show "Download Blank Form" as an `<a href={formTemplateUrl} target="_blank">` — render only when `formTemplateUrl !== null`.
 
 ### Phase 2 — Admin Edit & Toggle
 
@@ -249,6 +291,7 @@ Each card must show:
 10. Add an "Upload Form Template" file input (accept: `.pdf,.docx,.doc`) per card (admin only).
 
 11. On file select, build a `FormData` object:
+
     ```typescript
     const form = new FormData();
     form.append('file', selectedFile);
@@ -271,6 +314,7 @@ Each card must show:
 ## ✅ Success Criteria
 
 ### Must Have
+
 - [ ] All 3 development option cards are displayed correctly with data from the API
 - [ ] Token cost badge is visible and reflects the API value (not hardcoded)
 - [ ] Admin can edit name, description, and token cost via the edit modal
@@ -280,6 +324,7 @@ Each card must show:
 - [ ] Employees see only active options (`isActive: true`)
 
 ### Should Have
+
 - [ ] Loading skeletons while options are being fetched
 - [ ] Toast/snackbar confirmation after successful edit, toggle, or upload
 - [ ] Error handling with user-friendly messages (e.g. "Failed to update option")
@@ -287,6 +332,7 @@ Each card must show:
 - [ ] Confirmation dialog before toggling an option to inactive (in case employees have pending requests)
 
 ### Nice to Have
+
 - [ ] Animated card transitions when toggling active status
 - [ ] Rules JSON displayed as human-readable structured fields in the edit modal (rather than raw JSON)
 - [ ] Drag-and-drop file upload for form templates
