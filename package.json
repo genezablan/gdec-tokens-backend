@@ -23,7 +23,7 @@
     "migration:run": "npm run typeorm -- -d src/data-source.ts migration:run",
     "migration:revert": "npm run typeorm -- -d src/data-source.ts migration:revert",
     "migration:create": "npm run typeorm -- migration:create src/migrations/migration",
-    "migration:run:prod": "./node_modules/.bin/typeorm migration:run -d dist/data-source.js",
+    "migration:run:prod": "./node_modules/.bin/typeorm migration:run -d dist/src/data-source.js",
     "import:employees": "ts-node -r tsconfig-paths/register scripts/import-employees.ts",
     "import:ops-gmail": "ts-node -r tsconfig-paths/register scripts/import-ops-gmail.ts",
     "link:supervisors": "ts-node -r tsconfig-paths/register scripts/link-supervisors.ts",
