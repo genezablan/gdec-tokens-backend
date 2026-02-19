@@ -3,7 +3,7 @@ import {
   IsUUID,
   IsObject,
   IsOptional,
-  IsUrl,
+  IsString,
 } from 'class-validator';
 
 export class CreateTokenRequestDto {
@@ -18,12 +18,13 @@ export class CreateTokenRequestDto {
    * coaching:         { coachId: string }
    * learning_subsidy: { courseName: string, provider: string, amount: number }
    */
-  @IsNotEmpty()
+  @IsOptional()
   @IsObject()
-  formData: Record<string, unknown>;
+  formData?: Record<string, unknown>;
 
   /** Optional S3 URL of a supporting document uploaded before submission. */
   @IsOptional()
-  @IsUrl()
+  @IsString()
+  @IsNotEmpty()
   attachmentUrl?: string;
 }

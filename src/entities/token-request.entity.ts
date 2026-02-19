@@ -74,6 +74,21 @@ export class TokenRequest {
   @Column({ type: 'timestamptz', nullable: true })
   managerApprovedAt: Date;
 
+  // ─── Employee Info Snapshot ───────────────────────────────────────────────────
+
+  /**
+   * These fields are snapshotted from the employee's profile at submission time.
+   * They do NOT change if the employee is later transferred or promoted.
+   */
+  @Column({ length: 100, nullable: true })
+  snapshotDepartment: string;
+
+  @Column({ length: 100, nullable: true })
+  snapshotPosition: string;
+
+  @Column({ length: 101, nullable: true })
+  snapshotManagerName: string; // "First Last" of manager at submission time
+
   // ─── HR Approval ──────────────────────────────────────────────────────────────
 
   /** HR user who performed the final approval. Set at hr-approve time. */

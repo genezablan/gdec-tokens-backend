@@ -213,6 +213,7 @@ Frontend implementation guides live in `docs/`. Each guide covers API endpoints,
 | `docs/development-options-guide.md` | Development Options — cards, edit, toggle, template upload |
 | `docs/token-balances-guide.md`      | Token Balances — wallet, history, admin initialization     |
 | `docs/token-management-guide.md`    | Token Management — admin table, boost tokens, CSV export   |
+| `docs/token-requests-guide.md`      | Token Requests — submit, approve (manager+HR), cancel      |
 | `docs/AWS_SERVICES_GUIDE.md`        | AWS S3 + SES service wrappers                              |
 
 When creating a new guide, follow the format in `docs/auth-module-guide.md`:

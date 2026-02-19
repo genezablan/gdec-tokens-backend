@@ -13,8 +13,11 @@ import { DevelopmentOption } from '../entities/development-option.entity';
 import { TokenBalancesService } from '../token-balances/token-balances.service';
 import { EmailService } from '../common/services/email.service';
 import { RequestStatus, UserRole, DevelopmentOptionType } from '../common/enums';
-import { CreateTokenRequestDto } from './dto/create-token-request.dto';
+import { CreateTaskOffloadingRequestDto } from './dto/create-task-offloading-request.dto';
+import { CreateCoachingRequestDto } from './dto/create-coaching-request.dto';
+import { CreateLearningSubsidyRequestDto } from './dto/create-learning-subsidy-request.dto';
 import { RejectTokenRequestDto } from './dto/reject-token-request.dto';
+import { ResubmitTokenRequestDto } from './dto/resubmit-token-request.dto';
 
 @Injectable()
 export class TokenRequestsService {
@@ -48,84 +51,92 @@ export class TokenRequestsService {
    * otherwise falls back to any admin.
    */
   private async resolveManager(employee: User): Promise<User> {
-    if (employee.immediateSupervisorId) {
-      const supervisor = await this.userRepo.findOne({
-        where: { id: employee.immediateSupervisorId },
-      });
-      if (supervisor && supervisor.roles.includes(UserRole.APPROVER)) {
-        return supervisor;
-      }
+    if (!employee.immediateSupervisorId) {
+      throw new BadRequestException('No immediate supervisor assigned to this employee');
     }
-    // Fallback: any admin
-    const admin = await this.userRepo.findOne({
-      where: { roles: [UserRole.ADMIN] as any },
+
+    const supervisor = await this.userRepo.findOne({
+      where: { id: employee.immediateSupervisorId },
     });
-    if (!admin) throw new BadRequestException('No approver found for this employee');
-    return admin;
+
+    if (!supervisor) {
+      throw new BadRequestException('Assigned supervisor not found in the system');
+    }
+
+    if (!supervisor.roles.includes(UserRole.APPROVER)) {
+      throw new BadRequestException(
+        `Supervisor ${supervisor.firstName} ${supervisor.lastName} does not have the approver role`,
+      );
+    }
+
+    return supervisor;
   }
 
   // ─── Submit ──────────────────────────────────────────────────────────────────
 
-  async create(employeeId: string, dto: CreateTokenRequestDto): Promise<TokenRequest> {
+  /** Shared setup: validate employee, option, balance, resolve manager. */
+  private async prepareRequest(
+    employeeId: string,
+    developmentOptionId: string,
+    expectedType: DevelopmentOptionType,
+  ) {
     const employee = await this.userRepo.findOne({ where: { id: employeeId } });
     if (!employee) throw new NotFoundException('Employee not found');
 
-    const option = await this.optionRepo.findOne({ where: { id: dto.developmentOptionId } });
+    const option = await this.optionRepo.findOne({ where: { id: developmentOptionId } });
     if (!option) throw new NotFoundException('Development option not found');
     if (!option.isActive) throw new BadRequestException('This development option is currently inactive');
-
-    const year = new Date().getFullYear();
-
-    // ── Consecutive-year check for task offloading ──
-    if (option.type === DevelopmentOptionType.TASK_OFFLOADING) {
-      const previousYear = year - 1;
-      const existingApproval = await this.requestRepo.findOne({
-        where: {
-          employeeId,
-          type: DevelopmentOptionType.TASK_OFFLOADING,
-          status: RequestStatus.APPROVED,
-          year: previousYear,
-        },
-      });
-      if (existingApproval) {
-        throw new BadRequestException(
-          'Task Offloading cannot be requested in consecutive years. You were approved last year.',
-        );
-      }
-    }
-
-    // ── Token balance check ──
-    const balance = await this.tokenBalancesService.getBalance(employeeId, year);
-    if (balance.remaining < option.tokenCost) {
+    if (option.type !== expectedType) {
       throw new BadRequestException(
-        `Insufficient tokens. Required: ${option.tokenCost}, Available: ${balance.remaining}`,
+        `Expected a ${expectedType} option, got ${option.type}`,
       );
     }
 
-    // ── Resolve manager ──
+    const year = new Date().getFullYear();
+    const balance = await this.tokenBalancesService.getBalance(employeeId, year);
     const manager = await this.resolveManager(employee);
+
+    return { employee, option, year, balance, manager };
+  }
+
+  /** Save the request, notify the manager, and return the full record. */
+  private async saveAndNotify(opts: {
+    employeeId: string;
+    optionId: string;
+    optionType: DevelopmentOptionType;
+    tokenCost: number;
+    year: number;
+    managerId: string;
+    employee: User;
+    manager: User;
+    formData: Record<string, unknown>;
+    attachmentUrl?: string;
+  }): Promise<TokenRequest> {
+    const { employeeId, optionId, optionType, tokenCost, year, managerId, employee, manager, formData, attachmentUrl } = opts;
 
     const request = this.requestRepo.create({
       employeeId,
-      developmentOptionId: option.id,
-      type: option.type,
-      tokenCost: option.tokenCost, // snapshot
+      developmentOptionId: optionId,
+      type: optionType,
+      tokenCost,
       year,
       status: RequestStatus.PENDING,
-      managerId: manager.id,
-      formData: dto.formData,
-      attachmentUrl: dto.attachmentUrl,
+      managerId,
+      snapshotDepartment: employee.department,
+      snapshotPosition: employee.position,
+      snapshotManagerName: `${manager.firstName} ${manager.lastName}`,
+      formData,
+      attachmentUrl,
     });
 
     await this.requestRepo.save(request);
     this.logger.log(`Token request created: ${request.id} by employee ${employeeId}`);
 
-    // ── Notify manager ──
     try {
       await this.emailService.sendRequestNotification(
         manager.email,
         `${employee.firstName} ${employee.lastName}`,
-        option.name,
+        request.type,
         request.id,
       );
     } catch (err: unknown) {
@@ -133,6 +144,154 @@ export class TokenRequestsService {
     }
 
     return this.findRequest(request.id);
+  }
+
+  /**
+   * POST /token-requests/task-offloading
+   * Costs 1 token. Cannot repeat in consecutive years.
+   */
+  async createTaskOffloading(
+    employeeId: string,
+    dto: CreateTaskOffloadingRequestDto,
+  ): Promise<TokenRequest> {
+    const { employee, option, year, balance, manager } = await this.prepareRequest(
+      employeeId,
+      dto.developmentOptionId,
+      DevelopmentOptionType.TASK_OFFLOADING,
+    );
+
+    // Consecutive-year guard
+    const previousYear = year - 1;
+    const existingApproval = await this.requestRepo.findOne({
+      where: {
+        employeeId,
+        type: DevelopmentOptionType.TASK_OFFLOADING,
+        status: RequestStatus.APPROVED,
+        year: previousYear,
+      },
+    });
+    if (existingApproval) {
+      throw new BadRequestException(
+        'Task Offloading cannot be requested in consecutive years. You were approved last year.',
+      );
+    }
+
+    if (balance.remaining < option.tokenCost) {
+      throw new BadRequestException(
+        `Insufficient tokens. Required: ${option.tokenCost}, Available: ${balance.remaining}`,
+      );
+    }
+
+    return this.saveAndNotify({
+      employeeId,
+      optionId: option.id,
+      optionType: option.type,
+      tokenCost: option.tokenCost,
+      year,
+      managerId: manager.id,
+      employee,
+      manager,
+      formData: {},
+      attachmentUrl: dto.attachmentUrl,
+    });
+  }
+
+  /**
+   * POST /token-requests/coaching
+   * Costs 2 tokens. Coach must exist and have the coach role.
+   */
+  async createCoaching(
+    employeeId: string,
+    dto: CreateCoachingRequestDto,
+  ): Promise<TokenRequest> {
+    const { employee, option, year, balance, manager } = await this.prepareRequest(
+      employeeId,
+      dto.developmentOptionId,
+      DevelopmentOptionType.COACHING,
+    );
+
+    // Validate coach
+    const coach = await this.userRepo.findOne({ where: { id: dto.coachId } });
+    if (!coach) throw new NotFoundException('Coach not found');
+    if (!coach.roles.includes(UserRole.COACH)) {
+      throw new BadRequestException('The selected employee does not have the coach role');
+    }
+    if (coach.id === employeeId) {
+      throw new BadRequestException('You cannot nominate yourself as your coach');
+    }
+
+    if (balance.remaining < option.tokenCost) {
+      throw new BadRequestException(
+        `Insufficient tokens. Required: ${option.tokenCost}, Available: ${balance.remaining}`,
+      );
+    }
+
+    return this.saveAndNotify({
+      employeeId,
+      optionId: option.id,
+      optionType: option.type,
+      tokenCost: option.tokenCost,
+      year,
+      managerId: manager.id,
+      employee,
+      manager,
+      formData: {
+        coachId: dto.coachId,
+        coachName: `${coach.firstName} ${coach.lastName}`,
+        notes: dto.notes ?? null,
+      },
+      attachmentUrl: dto.attachmentUrl,
+    });
+  }
+
+  /**
+   * POST /token-requests/learning-subsidy
+   * subsidyAmount determines tokenCost (1 token = ₱1,000, max ₱3,000 / 3 tokens).
+   */
+  async createLearningSubsidy(
+    employeeId: string,
+    dto: CreateLearningSubsidyRequestDto,
+  ): Promise<TokenRequest> {
+    const { employee, option, year, balance, manager } = await this.prepareRequest(
+      employeeId,
+      dto.developmentOptionId,
+      DevelopmentOptionType.LEARNING_SUBSIDY,
+    );
+
+    // Derive token cost from subsidy amount
+    const subsidyPerToken: number =
+      (option.rules as Record<string, number>)?.subsidyPerToken ?? 1000;
+    const tokenCost = Math.ceil(dto.subsidyAmount / subsidyPerToken);
+    const maxTokens: number = (option.rules as Record<string, number>)?.maxTokens ?? 3;
+
+    if (tokenCost > maxTokens) {
+      throw new BadRequestException(
+        `Subsidy amount ₱${dto.subsidyAmount} exceeds the maximum of ₱${maxTokens * subsidyPerToken}`,
+      );
+    }
+    if (balance.remaining < tokenCost) {
+      throw new BadRequestException(
+        `Insufficient tokens. Required: ${tokenCost}, Available: ${balance.remaining}`,
+      );
+    }
+
+    return this.saveAndNotify({
+      employeeId,
+      optionId: option.id,
+      optionType: option.type,
+      tokenCost, // overrides option.tokenCost — varies per amount
+      year,
+      managerId: manager.id,
+      employee,
+      manager,
+      formData: {
+        courseName: dto.courseName,
+        provider: dto.provider,
+        subsidyAmount: dto.subsidyAmount,
+        tokenCost,
+      },
+      attachmentUrl: dto.attachmentUrl,
+    });
   }
 
   // ─── Manager Approve ──────────────────────────────────────────────────────────
@@ -153,9 +312,11 @@ export class TokenRequestsService {
     this.logger.log(`Request ${requestId} manager-approved by ${approverId}`);
 
     // ── Resolve HR and notify ──
-    const hrUser = await this.userRepo.findOne({
-      where: { roles: [UserRole.HR_APPROVER] as any, isActive: true },
-    });
+    const hrUser = await this.userRepo
+      .createQueryBuilder('user')
+      .where(':role = ANY(user.roles)', { role: UserRole.HR_APPROVER })
+      .andWhere('user.isActive = true')
+      .getOne();
 
     if (hrUser) {
       try {
@@ -250,7 +411,7 @@ export class TokenRequestsService {
       );
     } catch (err: unknown) {
       this.logger.warn(`Failed to send rejection email: ${(err as Error).message}`);
-    }}
+    }
 
     return this.findRequest(requestId);
   }
@@ -276,7 +437,108 @@ export class TokenRequestsService {
 
     return this.findRequest(requestId);
   }
+  // ─── Resubmit ─────────────────────────────────────────────────────────────────────────
 
+  /**
+   * PATCH /token-requests/:id/resubmit
+   * Employee: update and resubmit a rejected request back to pending.
+   * Only the original employee can call this. Only rejected requests qualify.
+   */
+  async resubmit(
+    requestId: string,
+    employeeId: string,
+    dto: ResubmitTokenRequestDto,
+  ): Promise<TokenRequest> {
+    const request = await this.findRequest(requestId);
+
+    if (request.employeeId !== employeeId) {
+      throw new ForbiddenException('You can only resubmit your own requests');
+    }
+    if (request.status !== RequestStatus.REJECTED) {
+      throw new BadRequestException(
+        `Only rejected requests can be resubmitted (current: ${request.status})`,
+      );
+    }
+
+    // ── Merge updated fields into formData per type ──
+    if (request.type === DevelopmentOptionType.TASK_OFFLOADING) {
+      if (dto.attachmentUrl) {
+        request.attachmentUrl = dto.attachmentUrl;
+      }
+    } else if (request.type === DevelopmentOptionType.COACHING) {
+      const formData = { ...(request.formData as Record<string, unknown>) };
+      if (dto.coachId) {
+        const coach = await this.userRepo.findOne({ where: { id: dto.coachId } });
+        if (!coach) throw new NotFoundException('Coach not found');
+        if (!coach.roles.includes(UserRole.COACH)) {
+          throw new BadRequestException('The selected employee does not have the coach role');
+        }
+        if (coach.id === employeeId) {
+          throw new BadRequestException('You cannot nominate yourself as your coach');
+        }
+        formData.coachId = coach.id;
+        formData.coachName = `${coach.firstName} ${coach.lastName}`;
+      }
+      if (dto.notes !== undefined) formData.notes = dto.notes;
+      if (dto.attachmentUrl) request.attachmentUrl = dto.attachmentUrl;
+      request.formData = formData;
+    } else if (request.type === DevelopmentOptionType.LEARNING_SUBSIDY) {
+      const formData = { ...(request.formData as Record<string, unknown>) };
+      if (dto.subsidyAmount !== undefined) {
+        const option = await this.optionRepo.findOne({ where: { id: request.developmentOptionId } });
+        const subsidyPerToken = (option?.rules as Record<string, number>)?.subsidyPerToken ?? 1000;
+        const maxTokens = (option?.rules as Record<string, number>)?.maxTokens ?? 3;
+        const newTokenCost = Math.ceil(dto.subsidyAmount / subsidyPerToken);
+        if (newTokenCost > maxTokens) {
+          throw new BadRequestException(
+            `Subsidy amount ₱${dto.subsidyAmount} exceeds the maximum of ₱${maxTokens * subsidyPerToken}`,
+          );
+        }
+        // Re-check balance with new cost
+        const year = new Date().getFullYear();
+        const balance = await this.tokenBalancesService.getBalance(employeeId, year);
+        if (balance.remaining < newTokenCost) {
+          throw new BadRequestException(
+            `Insufficient tokens. Required: ${newTokenCost}, Available: ${balance.remaining}`,
+          );
+        }
+        formData.subsidyAmount = dto.subsidyAmount;
+        formData.tokenCost = newTokenCost;
+        request.tokenCost = newTokenCost;
+      }
+      if (dto.courseName) formData.courseName = dto.courseName;
+      if (dto.provider) formData.provider = dto.provider;
+      if (dto.attachmentUrl) request.attachmentUrl = dto.attachmentUrl;
+      request.formData = formData;
+    }
+
+    // ── Reset status and clear rejection fields ──
+    request.status = RequestStatus.PENDING;
+    request.rejectedById = null as any;
+    request.rejectedByLevel = null as any;
+    request.rejectionComment = null as any;
+    request.rejectedAt = null as any;
+
+    await this.requestRepo.save(request);
+    this.logger.log(`Request ${requestId} resubmitted by employee ${employeeId}`);
+
+    // ── Re-notify manager ──
+    const manager = await this.userRepo.findOne({ where: { id: request.managerId } });
+    if (manager) {
+      try {
+        await this.emailService.sendRequestNotification(
+          manager.email,
+          `${request.employee.firstName} ${request.employee.lastName}`,
+          request.type,
+          request.id,
+        );
+      } catch (err: unknown) {
+        this.logger.warn(`Failed to send resubmit notification: ${(err as Error).message}`);
+      }
+    }
+
+    return this.findRequest(requestId);
+  }
   // ─── Queries ──────────────────────────────────────────────────────────────────
 
   /** Employee: their own requests, newest first. */
@@ -288,16 +550,42 @@ export class TokenRequestsService {
     });
   }
 
-  /** Manager: pending requests assigned to them. */
-  async findPendingForManager(managerId: string): Promise<TokenRequest[]> {
-    return this.requestRepo.find({
-      where: { managerId, status: RequestStatus.PENDING },
-      relations: ['employee', 'developmentOption'],
-      order: { createdAt: 'ASC' },
-    });
+  /**
+   * Combined approval queue for the current user.
+   * - If user has `approver` role: includes their pending requests (status = pending, managerId = user.id)
+   * - If user has `hr_approver` role: includes manager-approved requests (status = manager_approved)
+   * Each item is tagged with `queueType: 'manager' | 'hr'` so the frontend knows which buttons to show.
+   */
+  async findApprovalQueue(
+    user: User,
+  ): Promise<(TokenRequest & { queueType: 'manager' | 'hr' })[]> {
+    const results: (TokenRequest & { queueType: 'manager' | 'hr' })[] = [];
+
+    if (user.roles.includes(UserRole.APPROVER) || user.roles.includes(UserRole.ADMIN as UserRole)) {
+      const managerItems = await this.requestRepo.find({
+        where: { managerId: user.id, status: RequestStatus.PENDING },
+        relations: ['employee', 'developmentOption'],
+        order: { createdAt: 'ASC' },
+      });
+      results.push(...managerItems.map((r) => Object.assign(r, { queueType: 'manager' as const })));
+    }
+
+    if (
+      user.roles.includes(UserRole.HR_APPROVER as UserRole) ||
+      user.roles.includes(UserRole.ADMIN as UserRole)
+    ) {
+      const hrItems = await this.requestRepo.find({
+        where: { status: RequestStatus.MANAGER_APPROVED },
+        relations: ['employee', 'manager', 'developmentOption'],
+        order: { managerApprovedAt: 'ASC' },
+      });
+      results.push(...hrItems.map((r) => Object.assign(r, { queueType: 'hr' as const })));
+    }
+
+    return results;
   }
 
-  /** HR: requests awaiting final approval. */
+  /** @deprecated Use findApprovalQueue instead */
   async findHrQueue(): Promise<TokenRequest[]> {
     return this.requestRepo.find({
       where: { status: RequestStatus.MANAGER_APPROVED },

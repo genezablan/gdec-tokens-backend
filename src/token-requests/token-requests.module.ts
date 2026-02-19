@@ -6,11 +6,13 @@ import { DevelopmentOption } from '../entities/development-option.entity';
 import { TokenRequestsService } from './token-requests.service';
 import { TokenRequestsController } from './token-requests.controller';
 import { TokenBalancesModule } from '../token-balances/token-balances.module';
+import { CommonModule } from '../common/common.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([TokenRequest, User, DevelopmentOption]),
-    TokenBalancesModule, // provides TokenBalancesService
+    TokenBalancesModule,
+    CommonModule, // provides S3Service
   ],
   controllers: [TokenRequestsController],
   providers: [TokenRequestsService],

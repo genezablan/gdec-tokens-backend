@@ -328,7 +328,7 @@ Please do not reply to this email.
     requestType: string,
     requestId: string,
   ): Promise<void> {
-    await this.sendTokenRequestApproval(
+    await this.sendTokenRequestNotification(
       approverEmail,
       'Approver',
       requesterName,

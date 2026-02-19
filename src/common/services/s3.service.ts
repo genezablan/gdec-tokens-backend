@@ -137,4 +137,23 @@ export class S3Service {
       },
     });
   }
+
+  /**
+   * Pre-upload an attachment before the request is submitted.
+   * Stored under token-request-attachments/<userId>/<uuid>/<filename>.
+   * Returns the S3 URL and key to be passed in CreateTokenRequestDto.attachmentUrl.
+   */
+  async uploadPendingAttachment(
+    buffer: Buffer,
+    userId: string,
+    filename: string,
+    contentType?: string,
+  ): Promise<UploadFileResult> {
+    const { v4: uuidv4 } = await import('uuid');
+    const key = `token-request-attachments/${userId}/${uuidv4()}/${filename}`;
+    return this.uploadFile(buffer, key, {
+      contentType,
+      metadata: { userId, originalFilename: filename },
+    });
+  }
 }

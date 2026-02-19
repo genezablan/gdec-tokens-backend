@@ -6,27 +6,87 @@ import {
   Param,
   Body,
   Query,
+  UploadedFile,
+  UseInterceptors,
+  BadRequestException,
   ParseUUIDPipe,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { TokenRequestsService } from './token-requests.service';
-import { CreateTokenRequestDto } from './dto/create-token-request.dto';
+import { CreateTaskOffloadingRequestDto } from './dto/create-task-offloading-request.dto';
+import { CreateCoachingRequestDto } from './dto/create-coaching-request.dto';
+import { CreateLearningSubsidyRequestDto } from './dto/create-learning-subsidy-request.dto';
 import { RejectTokenRequestDto } from './dto/reject-token-request.dto';
+import { ResubmitTokenRequestDto } from './dto/resubmit-token-request.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { User } from '../entities/user.entity';
 import { UserRole, RequestStatus } from '../common/enums';
+import { S3Service } from '../common/services/s3.service';
 
 @Controller('token-requests')
 export class TokenRequestsController {
-  constructor(private readonly tokenRequestsService: TokenRequestsService) {}
+  constructor(
+    private readonly tokenRequestsService: TokenRequestsService,
+    private readonly s3Service: S3Service,
+  ) {}
 
   /**
-   * POST /token-requests
-   * Employee: submit a new token request.
+   * POST /token-requests/upload-attachment
+   * Employee: pre-upload a supporting document to S3 before submitting the request.
+   * Returns { url, key, fileName } to pass as attachmentUrl in the create request body.
+   * Accepts multipart/form-data with field name 'file'.
    */
-  @Post()
-  create(@CurrentUser() user: User, @Body() dto: CreateTokenRequestDto) {
-    return this.tokenRequestsService.create(user.id, dto);
+  @Post('upload-attachment')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadAttachment(
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() user: User,
+  ) {
+    if (!file) throw new BadRequestException('No file provided');
+    const result = await this.s3Service.uploadPendingAttachment(
+      file.buffer,
+      user.id,
+      file.originalname,
+      file.mimetype,
+    );
+    return { url: result.url, key: result.key, fileName: file.originalname };
+  }
+
+  /**
+   * POST /token-requests/task-offloading
+   * Employee: submit a Task Offloading request (1 token).
+   */
+  @Post('task-offloading')
+  createTaskOffloading(
+    @CurrentUser() user: User,
+    @Body() dto: CreateTaskOffloadingRequestDto,
+  ) {
+    return this.tokenRequestsService.createTaskOffloading(user.id, dto);
+  }
+
+  /**
+   * POST /token-requests/coaching
+   * Employee: submit an Internal Coaching request (2 tokens).
+   */
+  @Post('coaching')
+  createCoaching(
+    @CurrentUser() user: User,
+    @Body() dto: CreateCoachingRequestDto,
+  ) {
+    return this.tokenRequestsService.createCoaching(user.id, dto);
+  }
+
+  /**
+   * POST /token-requests/learning-subsidy
+   * Employee: submit a Learning Subsidy request (1–3 tokens based on subsidyAmount).
+   */
+  @Post('learning-subsidy')
+  createLearningSubsidy(
+    @CurrentUser() user: User,
+    @Body() dto: CreateLearningSubsidyRequestDto,
+  ) {
+    return this.tokenRequestsService.createLearningSubsidy(user.id, dto);
   }
 
   /**
@@ -40,17 +100,19 @@ export class TokenRequestsController {
 
   /**
    * GET /token-requests/pending
-   * Manager (approver): view pending requests assigned to them.
+   * Combined approval queue — returns items from both manager queue and HR queue
+   * depending on the current user's roles. Each item includes `queueType: 'manager' | 'hr'`.
+   * Accessible to: approver, hr_approver, admin.
    */
   @Get('pending')
-  @Roles(UserRole.APPROVER, UserRole.ADMIN)
-  getPendingForManager(@CurrentUser() user: User) {
-    return this.tokenRequestsService.findPendingForManager(user.id);
+  @Roles(UserRole.APPROVER, UserRole.HR_APPROVER as UserRole, UserRole.ADMIN)
+  getApprovalQueue(@CurrentUser() user: User) {
+    return this.tokenRequestsService.findApprovalQueue(user);
   }
 
   /**
    * GET /token-requests/hr-queue
-   * HR approver: view manager-approved requests awaiting final HR approval.
+   * @deprecated Use GET /token-requests/pending instead.
    */
   @Get('hr-queue')
   @Roles(UserRole.HR_APPROVER as UserRole, UserRole.ADMIN)
@@ -130,6 +192,19 @@ export class TokenRequestsController {
     @Body() dto: RejectTokenRequestDto,
   ) {
     return this.tokenRequestsService.reject(id, user.id, dto, 'hr');
+  }
+
+  /**
+   * PATCH /token-requests/:id/resubmit
+   * Employee: update and resubmit a rejected request back to pending.
+   */
+  @Patch(':id/resubmit')
+  resubmit(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+    @Body() dto: ResubmitTokenRequestDto,
+  ) {
+    return this.tokenRequestsService.resubmit(id, user.id, dto);
   }
 
   /**

@@ -212,7 +212,7 @@ export class AuthService {
     }
   }
 
-  async getProfile(userId: string): Promise<User> {
+  async getProfile(userId: string): Promise<Omit<User, 'password'>> {
     const user = await this.userRepository.findOne({
       where: { id: userId },
       relations: ['immediateSupervisor'],
@@ -222,6 +222,8 @@ export class AuthService {
       throw new NotFoundException('User not found');
     }
 
-    return user;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { password, ...safeUser } = user;
+    return safeUser as Omit<User, 'password'>;
   }
 }
