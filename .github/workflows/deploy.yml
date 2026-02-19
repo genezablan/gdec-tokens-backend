@@ -3,27 +3,63 @@ name: Deploy to EC2
 on:
   push:
     branches:
+      - staging
       - master
 
 jobs:
-  deploy:
-    name: Build & Deploy
+  deploy-staging:
+    name: Deploy to Staging
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/staging'
 
     steps:
-      - name: Deploy via SSH
+      - name: Deploy via SSH (staging)
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
+          host: ${{ secrets.STAGING_EC2_HOST }}
+          username: ${{ secrets.STAGING_EC2_USER }}
+          key: ${{ secrets.STAGING_EC2_SSH_KEY }}
           port: 22
           script: |
             set -e
-
             APP_DIR="$HOME/gdec-tokens-backend"
 
-            echo "==> Pulling latest code..."
+            echo "==> Pulling latest code (staging)..."
+            cd "$APP_DIR"
+            git pull origin staging
+
+            echo "==> Installing dependencies..."
+            npm ci
+
+            echo "==> Building..."
+            npm run build
+
+            echo "==> Running migrations..."
+            npm run migration:run:prod
+
+            echo "==> Reloading app (zero-downtime)..."
+            pm2 reload gdec-tokens-backend-staging --update-env
+
+            echo "==> Staging deploy done."
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master'
+
+    steps:
+      - name: Deploy via SSH (production)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PROD_EC2_HOST }}
+          username: ${{ secrets.PROD_EC2_USER }}
+          key: ${{ secrets.PROD_EC2_SSH_KEY }}
+          port: 22
+          script: |
+            set -e
+            APP_DIR="$HOME/gdec-tokens-backend"
+
+            echo "==> Pulling latest code (production)..."
             cd "$APP_DIR"
             git pull origin master
 
@@ -39,4 +75,4 @@ jobs:
             echo "==> Reloading app (zero-downtime)..."
             pm2 reload gdec-tokens-backend --update-env
 
-            echo "==> Done."
+            echo "==> Production deploy done."
