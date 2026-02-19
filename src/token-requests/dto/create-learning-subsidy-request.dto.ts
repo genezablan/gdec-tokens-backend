@@ -1,25 +1,9 @@
-import {
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  Max,
-  Min,
-  IsNumber,
-  IsUUID,
-} from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, Max, Min, IsNumber, IsUUID } from 'class-validator';
 
 export class CreateLearningSubsidyRequestDto {
   @IsNotEmpty()
   @IsUUID()
   developmentOptionId!: string;
-
-  @IsNotEmpty()
-  @IsString()
-  courseName!: string;
-
-  @IsNotEmpty()
-  @IsString()
-  provider!: string;
 
   /**
    * Subsidy amount in PHP. Must be a multiple of 1,000, max ₱3,000.

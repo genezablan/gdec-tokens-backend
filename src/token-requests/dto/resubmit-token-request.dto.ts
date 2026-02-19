@@ -7,7 +7,7 @@ import { IsNumber, IsOptional, IsString, IsUUID, Max, Min } from 'class-validato
  *
  * task_offloading:  { attachmentUrl }
  * coaching:         { coachId?, notes?, attachmentUrl? }
- * learning_subsidy: { courseName?, provider?, subsidyAmount?, attachmentUrl? }
+ * learning_subsidy: { subsidyAmount?, attachmentUrl? }
  */
 export class ResubmitTokenRequestDto {
   // ── task_offloading ──────────────────────────────────────────────────────────
@@ -30,14 +30,6 @@ export class ResubmitTokenRequestDto {
   notes?: string;
 
   // ── learning_subsidy ─────────────────────────────────────────────────────────
-
-  @IsOptional()
-  @IsString()
-  courseName?: string;
-
-  @IsOptional()
-  @IsString()
-  provider?: string;
 
   /** Updated subsidy amount in PHP (1000–3000). */
   @IsOptional()

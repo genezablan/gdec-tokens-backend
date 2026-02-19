@@ -34,8 +34,6 @@ Shared endpoints (cancel, resubmit, approve/reject, view) are in [token-requests
 ```typescript
 interface CreateLearningSubsidyRequestDto {
   developmentOptionId: string; // UUID of the learning_subsidy development option
-  courseName: string; // Required
-  provider: string; // Required — training provider / platform name
   subsidyAmount: number; // 1000 | 2000 | 3000 (PHP) — tokenCost = subsidyAmount / 1000
   attachmentUrl?: string; // Optional — S3 URL from POST /upload-attachment
 }
@@ -45,8 +43,6 @@ interface CreateLearningSubsidyRequestDto {
 
 ```typescript
 interface LearningSubsidyFormData {
-  courseName: string;
-  provider: string;
   subsidyAmount: number; // e.g. 2000
   tokenCost: number; // e.g. 2 (always subsidy / 1000)
 }
@@ -56,8 +52,6 @@ interface LearningSubsidyFormData {
 
 ```typescript
 interface ResubmitLearningSubsidyDto {
-  courseName?: string;
-  provider?: string;
   subsidyAmount?: number; // 1000 | 2000 | 3000 — recalculates tokenCost
   attachmentUrl?: string;
 }
@@ -86,8 +80,6 @@ curl -X POST http://localhost:3000/api/token-requests/learning-subsidy \
   -H "Content-Type: application/json" \
   -d '{
     "developmentOptionId": "<OPTION_UUID>",
-    "courseName": "AWS Cloud Practitioner",
-    "provider": "Udemy",
     "subsidyAmount": 2000
   }'
 ```
@@ -106,8 +98,6 @@ curl -X POST http://localhost:3000/api/token-requests/learning-subsidy \
   -H "Content-Type: application/json" \
   -d '{
     "developmentOptionId": "<OPTION_UUID>",
-    "courseName": "AWS Cloud Practitioner",
-    "provider": "Udemy",
     "subsidyAmount": 2000,
     "attachmentUrl": "https://gdec-tokens.s3.ap-southeast-1.amazonaws.com/token-request-attachments/.../enrollment-proof.pdf"
   }'
@@ -116,13 +106,11 @@ curl -X POST http://localhost:3000/api/token-requests/learning-subsidy \
 ### 4. Resubmit after rejection
 
 ```bash
-# Update course and reduce amount to 1 token
+# Reduce amount to 1 token
 curl -X PATCH http://localhost:3000/api/token-requests/<REQUEST_ID>/resubmit \
   -H "Authorization: Bearer <TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
-    "courseName": "Google Data Analytics Certificate",
-    "provider": "Coursera",
     "subsidyAmount": 1000
   }'
 ```
@@ -138,14 +126,6 @@ Employee Information (read-only — auto-filled)
 ────────────────────────────────────────────────
 Department:  [ Finance ]   Position: [ Finance Officer ]
 Manager:     [ Juan dela Cruz ]   Date: [ Feb 19, 2026 ]
-
-Course Name *
-──────────────
-[ AWS Cloud Practitioner             ]
-
-Provider / Platform *
-──────────────────────
-[ Udemy                              ]
 
 Subsidy Amount *
 ────────────────
@@ -167,12 +147,12 @@ Supporting Document (optional)
 2. **Tokens to be Used** updates live as the employee selects an amount: `subsidyAmount / 1000`.
 3. Check `availableTokens >= tokenCost` before submitting; show a warning if insufficient.
 4. File upload is optional — follow the shared upload flow if a file is attached.
-5. On submit → `POST /token-requests/learning-subsidy` with all required fields.
+5. On submit → `POST /token-requests/learning-subsidy` with `developmentOptionId`, `subsidyAmount`, and optionally `attachmentUrl`.
 
 #### Resubmit Modal
 
-Pre-fill with existing `formData` (courseName, provider, subsidyAmount).
-All fields are editable. Submit via `PATCH /:id/resubmit`.
+Pre-fill with existing `formData` (subsidyAmount).
+Employee can change the amount or attach a new document. Submit via `PATCH /:id/resubmit`.
 
 ---
 
@@ -180,20 +160,14 @@ All fields are editable. Submit via `PATCH /:id/resubmit`.
 
 ### Must Have
 
-- [ ] Employee can enter course name and provider
 - [ ] Subsidy amount is constrained to ₱1,000 / ₱2,000 / ₱3,000
 - [ ] Live token cost preview updates when amount changes
 - [ ] Token balance warning if cost exceeds available tokens
-- [ ] Request created with `formData` containing courseName, provider, subsidyAmount, tokenCost
-- [ ] Employee can resubmit with updated course details or reduced amount
+- [ ] Request created with `formData` containing subsidyAmount and tokenCost
+- [ ] Employee can resubmit with a different subsidy amount
 
 ### Should Have
 
 - [ ] Upload progress indicator for optional attachment
 - [ ] Attachment download link visible in request detail drawer
 - [ ] Show `subsidyAmount` formatted as `₱2,000` throughout the UI
-
-### Nice to Have
-
-- [ ] Auto-suggest popular providers (Udemy, Coursera, LinkedIn Learning, etc.)
-- [ ] Running total of subsidies received this year shown in the form

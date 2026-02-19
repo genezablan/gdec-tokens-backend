@@ -8,9 +8,16 @@ async function bootstrap() {
   const configService = app.get(ConfigService);
 
   // Enable CORS
+  const allowedOrigins = (configService.get<string>('CORS_ORIGINS') || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
   app.enableCors({
-    origin: true, // Configure based on your frontend URL in production
+    origin: allowedOrigins.length > 0 ? allowedOrigins : true,
     credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   });
 
   // Global validation pipe

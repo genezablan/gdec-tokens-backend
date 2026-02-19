@@ -285,8 +285,6 @@ export class TokenRequestsService {
       employee,
       manager,
       formData: {
-        courseName: dto.courseName,
-        provider: dto.provider,
         subsidyAmount: dto.subsidyAmount,
         tokenCost,
       },
@@ -506,8 +504,6 @@ export class TokenRequestsService {
         formData.tokenCost = newTokenCost;
         request.tokenCost = newTokenCost;
       }
-      if (dto.courseName) formData.courseName = dto.courseName;
-      if (dto.provider) formData.provider = dto.provider;
       if (dto.attachmentUrl) request.attachmentUrl = dto.attachmentUrl;
       request.formData = formData;
     }

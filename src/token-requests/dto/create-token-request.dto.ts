@@ -16,7 +16,7 @@ export class CreateTokenRequestDto {
    *
    * task_offloading:  { projectName: string, projectDescription: string }
    * coaching:         { coachId: string }
-   * learning_subsidy: { courseName: string, provider: string, amount: number }
+   * learning_subsidy: { subsidyAmount: number }
    */
   @IsOptional()
   @IsObject()
