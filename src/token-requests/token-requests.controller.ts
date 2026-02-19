@@ -7,12 +7,9 @@ import {
   Param,
   Body,
   Query,
-  UploadedFile,
-  UseInterceptors,
   BadRequestException,
   ParseUUIDPipe,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
 import { TokenRequestsService } from './token-requests.service';
 import { CoachingSessionsService } from './coaching-sessions.service';
 import { CreateTaskOffloadingRequestDto } from './dto/create-task-offloading-request.dto';
@@ -36,25 +33,19 @@ export class TokenRequestsController {
   ) {}
 
   /**
-   * POST /token-requests/upload-attachment
-   * Employee: pre-upload a supporting document to S3 before submitting the request.
-   * Returns { url, key, fileName } to pass as attachmentUrl in the create request body.
-   * Accepts multipart/form-data with field name 'file'.
+   * GET /token-requests/presigned-upload?fileName=x&contentType=y
+   * Returns a pre-signed S3 PUT URL. Browser uploads the file directly to S3,
+   * then passes fileUrl as attachmentUrl when submitting the request.
    */
-  @Post('upload-attachment')
-  @UseInterceptors(FileInterceptor('file'))
-  async uploadAttachment(
-    @UploadedFile() file: Express.Multer.File,
+  @Get('presigned-upload')
+  async getPresignedUploadUrl(
+    @Query('fileName') fileName: string,
+    @Query('contentType') contentType: string,
     @CurrentUser() user: User,
   ) {
-    if (!file) throw new BadRequestException('No file provided');
-    const result = await this.s3Service.uploadPendingAttachment(
-      file.buffer,
-      user.id,
-      file.originalname,
-      file.mimetype,
-    );
-    return { url: result.url, key: result.key, fileName: file.originalname };
+    if (!fileName) throw new BadRequestException('fileName query param is required');
+    if (!contentType) throw new BadRequestException('contentType query param is required');
+    return await this.s3Service.generatePresignedUploadUrl(user.id, fileName, contentType);
   }
 
   /**

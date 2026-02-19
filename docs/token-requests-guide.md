@@ -35,12 +35,12 @@ All endpoints require `Authorization: Bearer <token>` header.
 
 ### Submission (type-specific — see individual guides)
 
-| Method | Endpoint                            | Guide                                                    |
-| ------ | ----------------------------------- | -------------------------------------------------------- |
-| `POST` | `/token-requests/upload-attachment` | All types — pre-upload a file to S3                      |
-| `POST` | `/token-requests/task-offloading`   | [task-offloading-guide.md](./task-offloading-guide.md)   |
-| `POST` | `/token-requests/coaching`          | [coaching-guide.md](./coaching-guide.md)                 |
-| `POST` | `/token-requests/learning-subsidy`  | [learning-subsidy-guide.md](./learning-subsidy-guide.md) |
+| Method | Endpoint                                                    | Guide                                                             |
+| ------ | ----------------------------------------------------------- | ----------------------------------------------------------------- |
+| `GET`  | `/token-requests/presigned-upload?fileName=x&contentType=y` | All types — get a pre-signed S3 PUT URL for direct browser upload |
+| `POST` | `/token-requests/task-offloading`                           | [task-offloading-guide.md](./task-offloading-guide.md)            |
+| `POST` | `/token-requests/coaching`                                  | [coaching-guide.md](./coaching-guide.md)                          |
+| `POST` | `/token-requests/learning-subsidy`                          | [learning-subsidy-guide.md](./learning-subsidy-guide.md)          |
 
 ### Shared (this guide)
 
@@ -178,23 +178,32 @@ Replace `<ID>` with a real UUID.
 
 > For submission curl examples, see the type-specific guides.
 
-### 1. Upload a supporting document (before submitting)
+### 1. Get a pre-signed upload URL
 
 ```bash
-curl -X POST http://localhost:3000/api/token-requests/upload-attachment \
-  -H "Authorization: Bearer <TOKEN>" \
-  -F "file=@/path/to/document.pdf"
+curl "http://localhost:3000/api/token-requests/presigned-upload?fileName=document.pdf&contentType=application%2Fpdf" \
+  -H "Authorization: Bearer <TOKEN>"
 ```
 
 **Response:**
 
 ```json
 {
-  "url": "https://gdec-tokens.s3.ap-southeast-1.amazonaws.com/token-request-attachments/...",
-  "key": "token-request-attachments/<userId>/<uuid>/document.pdf",
-  "fileName": "document.pdf"
+  "uploadUrl": "https://gdec-tokens-development.s3.ap-southeast-1.amazonaws.com/token-request-attachments/...?X-Amz-Signature=...",
+  "fileUrl": "https://gdec-tokens-development.s3.ap-southeast-1.amazonaws.com/token-request-attachments/.../document.pdf",
+  "key": "token-request-attachments/<userId>/<uuid>/document.pdf"
 }
 ```
+
+Then the browser uploads directly to S3:
+
+```bash
+curl -X PUT "<uploadUrl>" \
+  -H "Content-Type: application/pdf" \
+  --data-binary @/path/to/document.pdf
+```
+
+Pass `fileUrl` as `attachmentUrl` when submitting the request.
 
 ### 2. Get my request history
 
@@ -305,10 +314,36 @@ Tokens to be Used:  [ 1 token            ]   ← from developmentOption.tokenCos
 
 #### File Upload Flow (all types)
 
-1. Employee selects a file → immediately call `POST /token-requests/upload-attachment`
-2. Show upload progress indicator
-3. On success, store the returned `url` locally — display only the `fileName`, not the raw S3 URL
-4. On form submit, include `attachmentUrl` in the body
+Files are uploaded **directly from the browser to S3** using a pre-signed URL. This avoids routing the file through CloudFront/NestJS.
+
+1. Employee selects a file
+2. Call `GET /token-requests/presigned-upload?fileName=<name>&contentType=<mime>` → `{ uploadUrl, fileUrl }`
+3. `PUT` the file binary directly to `uploadUrl` with the matching `Content-Type` header
+4. Store `fileUrl` locally — display only the file name, not the full URL
+5. On form submit, include `attachmentUrl: fileUrl` in the body
+
+```typescript
+async function uploadAttachment(file: File, token: string): Promise<string> {
+  // Step 1 — get presigned URL from API
+  const params = new URLSearchParams({
+    fileName: file.name,
+    contentType: file.type,
+  });
+  const res = await fetch(`/api/token-requests/presigned-upload?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const { uploadUrl, fileUrl } = await res.json();
+
+  // Step 2 — upload directly to S3
+  await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': file.type },
+    body: file,
+  });
+
+  return fileUrl; // pass this as attachmentUrl
+}
+```
 
 #### Pre-submission Token Check
 
@@ -383,19 +418,21 @@ Table from `GET /token-requests?status=<filter>`.
 1. Wire the **"Request"** button on each Development Option card to open the matching form modal.
 2. Implement the shared file upload helper (reused across all forms):
    ```typescript
-   async function uploadAttachment(file: File, token: string) {
-     const form = new FormData();
-     form.append('file', file);
-     const res = await fetch('/api/token-requests/upload-attachment', {
-       method: 'POST',
-       headers: { Authorization: `Bearer ${token}` },
-       body: form,
+   async function uploadAttachment(file: File, token: string): Promise<string> {
+     const params = new URLSearchParams({
+       fileName: file.name,
+       contentType: file.type,
      });
-     return res.json() as Promise<{
-       url: string;
-       key: string;
-       fileName: string;
-     }>;
+     const res = await fetch(`/api/token-requests/presigned-upload?${params}`, {
+       headers: { Authorization: `Bearer ${token}` },
+     });
+     const { uploadUrl, fileUrl } = await res.json();
+     await fetch(uploadUrl, {
+       method: 'PUT',
+       headers: { 'Content-Type': file.type },
+       body: file,
+     });
+     return fileUrl;
    }
    ```
 3. Build each type-specific form modal (see individual guides).
@@ -445,5 +482,3 @@ Table from `GET /token-requests?status=<filter>`.
 - [ ] Real-time queue updates (polling or WebSocket)
 - [ ] Request timeline showing each status transition with timestamp
 - [ ] Email notification preview in the detail drawer
-
-

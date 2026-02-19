@@ -35,7 +35,7 @@ Shared endpoints (cancel, resubmit, approve/reject, view) are in [token-requests
 interface CreateLearningSubsidyRequestDto {
   developmentOptionId: string; // UUID of the learning_subsidy development option
   subsidyAmount: number; // 1000 | 2000 | 3000 (PHP) — tokenCost = subsidyAmount / 1000
-  attachmentUrl?: string; // Optional — S3 URL from POST /upload-attachment
+  attachmentUrl?: string; // Optional — S3 URL returned by GET /presigned-upload
 }
 ```
 
@@ -87,12 +87,16 @@ curl -X POST http://localhost:3000/api/token-requests/learning-subsidy \
 ### 3. Submit with enrollment proof
 
 ```bash
-# Step 1 — upload
-curl -X POST http://localhost:3000/api/token-requests/upload-attachment \
-  -H "Authorization: Bearer <TOKEN>" \
-  -F "file=@/path/to/enrollment-proof.pdf"
+# Step 1 — get presigned URL
+curl "http://localhost:3000/api/token-requests/presigned-upload?fileName=enrollment-proof.pdf&contentType=application%2Fpdf" \
+  -H "Authorization: Bearer <TOKEN>"
 
-# Step 2 — submit
+# Step 2 — upload directly to S3
+curl -X PUT "<uploadUrl>" \
+  -H "Content-Type: application/pdf" \
+  --data-binary @/path/to/enrollment-proof.pdf
+
+# Step 3 — submit with the returned fileUrl
 curl -X POST http://localhost:3000/api/token-requests/learning-subsidy \
   -H "Authorization: Bearer <TOKEN>" \
   -H "Content-Type: application/json" \
