@@ -32,7 +32,7 @@ import { LocalStrategy } from './strategies/local.strategy';
     JwtStrategy,
     LocalStrategy,
     // GoogleStrategy,  // Enable when OAuth is configured
-    // MicrosoftStrategy,  // Enable when OAuth is configured
+    // MicrosoftStrategy,  // Enable when Microsoft SSO is configured
   ],
   exports: [AuthService, JwtModule, PassportModule],
 })

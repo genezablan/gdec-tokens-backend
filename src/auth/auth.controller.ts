@@ -21,7 +21,9 @@ import { User } from '../entities/user.entity';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private authService: AuthService) {}
+  constructor(
+    private authService: AuthService,
+  ) {}
 
   @Public()
   @UseGuards(LocalAuthGuard)
@@ -76,7 +78,10 @@ export class AuthController {
     );
     return this.authService.login(user);
   }
+  */
 
+  // Microsoft SSO — enable when Azure AD app is configured
+  /*
   @Public()
   @Get('microsoft')
   @UseGuards(MicrosoftAuthGuard)
@@ -87,16 +92,22 @@ export class AuthController {
   @Public()
   @Get('microsoft/callback')
   @UseGuards(MicrosoftAuthGuard)
-  async microsoftAuthCallback(@Req() req) {
-    const { providerId, email, firstName, lastName } = req.user;
-    const user = await this.authService.validateOAuthUser(
-      providerId,
-      email,
-      'microsoft',
-      firstName,
-      lastName,
-    );
-    return this.authService.login(user);
+  async microsoftAuthCallback(@Req() req, @Res() res) {
+    const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
+    try {
+      const { providerId, email, firstName, lastName } = req.user;
+      const user = await this.authService.validateOAuthUser(
+        providerId,
+        email,
+        'microsoft',
+        firstName,
+        lastName,
+      );
+      const { accessToken } = await this.authService.login(user);
+      return res.redirect(`${frontendUrl}/auth/callback?token=${accessToken}`);
+    } catch {
+      return res.redirect(`${frontendUrl}/auth/error?message=Account+not+found.+Please+contact+HR.`);
+    }
   }
   */
 

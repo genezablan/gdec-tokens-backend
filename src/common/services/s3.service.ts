@@ -178,7 +178,10 @@ export class S3Service {
     });
 
     const uploadUrl = await getSignedUrl(this.s3Client, command, { expiresIn: 300 });
-    const fileUrl = `https://${this.bucketName}.s3.${region}.amazonaws.com/${key}`;
+    // Encode each path segment so the URL is valid regardless of filename characters.
+    // Forward slashes (folder separators) are NOT encoded.
+    const encodedKey = key.split('/').map(encodeURIComponent).join('/');
+    const fileUrl = `https://${this.bucketName}.s3.${region}.amazonaws.com/${encodedKey}`;
 
     return { uploadUrl, fileUrl, key };
   }
@@ -203,7 +206,8 @@ export class S3Service {
     });
 
     const uploadUrl = await getSignedUrl(this.s3Client, command, { expiresIn: 300 });
-    const fileUrl = `https://${this.bucketName}.s3.${region}.amazonaws.com/${key}`;
+    const encodedKey = key.split('/').map(encodeURIComponent).join('/');
+    const fileUrl = `https://${this.bucketName}.s3.${region}.amazonaws.com/${encodedKey}`;
 
     return { uploadUrl, fileUrl, key };
   }

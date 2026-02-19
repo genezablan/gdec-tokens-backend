@@ -136,6 +136,26 @@ export class TokenRequestsController {
   }
 
   /**
+   * GET /token-requests/:id/attachment
+   * Returns a pre-signed S3 download URL (15-minute expiry) for the request's attachment.
+   * Use this to render a download link — do NOT link directly to attachmentUrl (bucket is private).
+   */
+  @Get(':id/attachment')
+  async getAttachmentDownloadUrl(@Param('id', ParseUUIDPipe) id: string) {
+    const request = await this.tokenRequestsService.findOne(id);
+    if (!request.attachmentUrl) {
+      throw new BadRequestException('This request has no attachment');
+    }
+    // Extract the S3 key from the stored full URL.
+    // decodeURIComponent is required because fileUrl stores the key with
+    // percent-encoded segments (e.g. spaces → %20, parens → %28%29).
+    // Without decoding, the key passed to S3 won't match the object that was uploaded.
+    const key = decodeURIComponent(new URL(request.attachmentUrl).pathname.substring(1));
+    const url = await this.s3Service.getPresignedDownloadUrl(key);
+    return { url };
+  }
+
+  /**
    * PATCH /token-requests/:id/manager-approve
    * Manager: approve a pending request (moves to manager_approved).
    */
