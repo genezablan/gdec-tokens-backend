@@ -1,11 +1,18 @@
-# 📋 Token Requests Module — Frontend Implementation Guide
+# 📋 Token Requests — Shared Guide
+
+> **This file covers shared concerns:** data models, approval workflow, and the unified pending queue.
+> For submission-specific details, see the type guides:
+>
+> - [Task Offloading →](./task-offloading-guide.md)
+> - [Internal Coaching →](./coaching-guide.md) ← includes session booking & coach availability
+> - [Learning Subsidy →](./learning-subsidy-guide.md)
 
 ## 📋 Project Brief
 
 Implement the **My Request**, **Approval**, and **New Request** pages covering the full token
 request lifecycle:
 
-1. **Employee** submits a request (optionally uploads a supporting document first)
+1. **Employee** submits a request (see type-specific guide for form fields)
 2. **Manager** (`approver` role) reviews and approves or rejects
 3. **HR** (`hr_approver` role) does the final review — approval triggers token deduction
 4. **Employee** is notified by email at each stage and can cancel while still `pending`
@@ -26,12 +33,19 @@ Base URL: `http://localhost:3000/api`
 
 All endpoints require `Authorization: Bearer <token>` header.
 
+### Submission (type-specific — see individual guides)
+
+| Method | Endpoint                            | Guide                                                    |
+| ------ | ----------------------------------- | -------------------------------------------------------- |
+| `POST` | `/token-requests/upload-attachment` | All types — pre-upload a file to S3                      |
+| `POST` | `/token-requests/task-offloading`   | [task-offloading-guide.md](./task-offloading-guide.md)   |
+| `POST` | `/token-requests/coaching`          | [coaching-guide.md](./coaching-guide.md)                 |
+| `POST` | `/token-requests/learning-subsidy`  | [learning-subsidy-guide.md](./learning-subsidy-guide.md) |
+
+### Shared (this guide)
+
 | Method  | Endpoint                              | Purpose                                                  | Auth Required                         |
-| ------- | ------------------------------------- | -------------------------------------------------------- | ------------------------------------- | --- | ------- | ------------------------------ | ------------------------------------------------- | ---------------------- | --- | ------- | ---------------------------- | --------------------------------------------- | ---------------------- |
-| `POST`  | `/token-requests/upload-attachment`   | Pre-upload a supporting document to S3                   | Any authenticated user                |
-| `POST`  | `/token-requests/task-offloading`     | Submit a Task Offloading request (1 token)               | Any authenticated user                |
-| `POST`  | `/token-requests/coaching`            | Submit a Coaching request (2 tokens)                     | Any authenticated user                |
-| `POST`  | `/token-requests/learning-subsidy`    | Submit a Learning Subsidy request (1–3 tokens)           | Any authenticated user                |
+| ------- | ------------------------------------- | -------------------------------------------------------- | ------------------------------------- |
 | `GET`   | `/token-requests/my`                  | Employee's own request history                           | Any authenticated user                |
 | `GET`   | `/token-requests/pending`             | Combined approval queue (manager + HR items, role-aware) | `approver`, `hr_approver`, or `admin` |
 | `GET`   | `/token-requests`                     | All requests (filterable by status)                      | `admin`                               |
@@ -39,7 +53,9 @@ All endpoints require `Authorization: Bearer <token>` header.
 | `PATCH` | `/token-requests/:id/manager-approve` | Manager approves → `manager_approved`                    | `approver` or `admin`                 |
 | `PATCH` | `/token-requests/:id/manager-reject`  | Manager rejects → `rejected`                             | `approver` or `admin`                 |
 | `PATCH` | `/token-requests/:id/hr-approve`      | HR approves → `approved` + tokens deducted               | `hr_approver` or `admin`              |
-| `PATCH` | `/token-requests/:id/hr-reject`       | HR rejects → `rejected`                                  | `hr_approver` or `admin`              |     | `PATCH` | `/token-requests/:id/resubmit` | Employee updates and resubmits a rejected request | Any authenticated user |     | `PATCH` | `/token-requests/:id/cancel` | Employee cancels (pending only) → `cancelled` | Any authenticated user |
+| `PATCH` | `/token-requests/:id/hr-reject`       | HR rejects → `rejected`                                  | `hr_approver` or `admin`              |
+| `PATCH` | `/token-requests/:id/resubmit`        | Employee updates and resubmits a rejected request        | Any authenticated user                |
+| `PATCH` | `/token-requests/:id/cancel`          | Employee cancels (pending only) → `cancelled`            | Any authenticated user                |
 
 ---
 
@@ -68,7 +84,7 @@ interface TokenRequest {
   tokenCost: number; // snapshot at submission time
   year: number;
   status: RequestStatus;
-  queueType: 'manager' | 'hr'; // only present on items returned by GET /pending
+  queueType?: 'manager' | 'hr'; // only present on items from GET /pending
   managerId: string | null;
   manager: { id: string; firstName: string; lastName: string } | null;
   managerApprovedAt: string | null;
@@ -80,16 +96,18 @@ interface TokenRequest {
   rejectionComment: string | null;
   rejectedAt: string | null;
   cancelledAt: string | null;
-  formData: Record<string, unknown>;
+  formData: Record<string, unknown>; // type-specific — see individual type guides
   attachmentUrl: string | null;
-  // ── Employee info snapshot (captured at submission, never changes) ──
-  snapshotDepartment: string; // department at time of submission
-  snapshotPosition: string; // position at time of submission
-  snapshotManagerName: string; // manager's full name at time of submission
+  // ── Snapshot (captured at submission, never changes) ──
+  snapshotDepartment: string;
+  snapshotPosition: string;
+  snapshotManagerName: string;
   createdAt: string;
   updatedAt: string;
 }
 ```
+
+> **`formData` shape** varies by request type. See the type-specific guides for details.
 
 ### Enums
 
@@ -109,85 +127,9 @@ enum DevelopmentOptionType {
 }
 ```
 
-### Request Body DTOs
+### Shared DTOs
 
-#### `POST /token-requests/task-offloading`
-
-```typescript
-interface CreateTaskOffloadingRequestDto {
-  developmentOptionId: string; // UUID of the task_offloading development option
-  attachmentUrl: string; // Required — S3 URL of the completed form (from upload-attachment)
-}
-```
-
-#### `POST /token-requests/coaching`
-
-```typescript
-interface CreateCoachingRequestDto {
-  developmentOptionId: string; // UUID of the coaching development option
-  coachId: string; // UUID of a user with the `coach` role
-  notes?: string; // Optional coaching goals or notes
-  attachmentUrl?: string; // Optional supporting document
-}
-```
-
-#### `POST /token-requests/learning-subsidy`
-
-```typescript
-interface CreateLearningSubsidyRequestDto {
-  developmentOptionId: string; // UUID of the learning_subsidy development option
-  courseName: string;
-  provider: string;
-  subsidyAmount: number; // 1000, 2000, or 3000 (PHP). tokenCost = subsidyAmount / 1000
-  attachmentUrl?: string; // Optional enrollment proof
-}
-```
-
-### `formData` Stored on the Request (read-only, returned by GET endpoints)
-
-```typescript
-// type === 'task_offloading'  →  formData is always {}
-// (all information is in the attachment)
-
-// type === 'coaching'
-interface CoachingFormData {
-  coachId: string;
-  coachName: string; // snapshot of coach's full name at submission time
-  notes: string | null;
-}
-
-// type === 'learning_subsidy'
-interface LearningSubsidyFormData {
-  courseName: string;
-  provider: string;
-  subsidyAmount: number; // e.g. 2000
-  tokenCost: number; // e.g. 2
-}
-```
-
-### `ResubmitTokenRequestDto` (body for `PATCH /:id/resubmit`)
-
-Only send the fields you want to update. Unrecognised fields for the request type are ignored.
-
-```typescript
-interface ResubmitTokenRequestDto {
-  // task_offloading
-  attachmentUrl?: string; // replace the uploaded form
-
-  // coaching
-  coachId?: string; // replace the coach (UUID, must have coach role)
-  notes?: string; // update coaching notes
-  // attachmentUrl also applies
-
-  // learning_subsidy
-  courseName?: string;
-  provider?: string;
-  subsidyAmount?: number; // 1000 | 2000 | 3000 — recalculates tokenCost
-  // attachmentUrl also applies
-}
-```
-
-### `RejectTokenRequestDto` (body for reject endpoints)
+#### `RejectTokenRequestDto` (body for both reject endpoints)
 
 ```typescript
 interface RejectTokenRequestDto {
@@ -195,12 +137,46 @@ interface RejectTokenRequestDto {
 }
 ```
 
+#### `ResubmitTokenRequestDto` (body for `PATCH /:id/resubmit`)
+
+Only send the fields you want to update. Fields not applicable to the request type are ignored.
+
+```typescript
+interface ResubmitTokenRequestDto {
+  // shared
+  attachmentUrl?: string;
+
+  // coaching only
+  coachId?: string;
+  notes?: string;
+
+  // learning_subsidy only
+  courseName?: string;
+  provider?: string;
+  subsidyAmount?: number; // 1000 | 2000 | 3000 — recalculates tokenCost
+}
+```
+
+### Employee Info Snapshot
+
+The backend captures these automatically at submission time. The frontend must **display** them in the form (pre-filled from `GET /auth/me`) but must **not** send them in the request body.
+
+| Snapshot field        | Source                              |
+| --------------------- | ----------------------------------- |
+| `snapshotDepartment`  | `user.department`                   |
+| `snapshotPosition`    | `user.position`                     |
+| `snapshotManagerName` | `user.immediateSupervisor.fullName` |
+
+If an employee transfers departments after submitting, the request will always reflect their info **at the time of submission**.
+
 ---
 
 ## 🧪 curl Test Commands
 
 Replace `<TOKEN>` with a JWT from `POST /api/auth/login`.
 Replace `<ID>` with a real UUID.
+
+> For submission curl examples, see the type-specific guides.
 
 ### 1. Upload a supporting document (before submitting)
 
@@ -214,73 +190,36 @@ curl -X POST http://localhost:3000/api/token-requests/upload-attachment \
 
 ```json
 {
-  "url": "https://gdec-tokens-development.s3.ap-southeast-1.amazonaws.com/token-request-attachments/...",
+  "url": "https://gdec-tokens.s3.ap-southeast-1.amazonaws.com/token-request-attachments/...",
   "key": "token-request-attachments/<userId>/<uuid>/document.pdf",
   "fileName": "document.pdf"
 }
 ```
 
-### 2. Submit a Task Offloading request
+### 2. Get my request history
 
 ```bash
-curl -X POST http://localhost:3000/api/token-requests/task-offloading \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "developmentOptionId": "<OPTION_UUID>",
-    "attachmentUrl": "https://gdec-tokens-development.s3.ap-southeast-1.amazonaws.com/token-request-attachments/.../form.docx"
-  }'
-```
-
-### 3. Submit a Coaching request
-
-```bash
-curl -X POST http://localhost:3000/api/token-requests/coaching \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "developmentOptionId": "<OPTION_UUID>",
-    "coachId": "<COACH_USER_UUID>",
-    "notes": "Improve leadership and communication skills."
-  }'
-```
-
-### 4. Submit a Learning Subsidy request
-
-```bash
-curl -X POST http://localhost:3000/api/token-requests/learning-subsidy \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "developmentOptionId": "<OPTION_UUID>",
-    "courseName": "AWS Cloud Practitioner",
-    "provider": "Udemy",
-    "subsidyAmount": 2000
-  }'
-```
-
-### 5. Get my request history
-
-```bash
-curl -X GET http://localhost:3000/api/token-requests/my \
+curl http://localhost:3000/api/token-requests/my \
   -H "Authorization: Bearer <TOKEN>"
 ```
 
-### 6. Manager: get pending queue
+### 3. Get approval queue (manager, HR, or both)
 
 ```bash
-curl -X GET http://localhost:3000/api/token-requests/pending \
-  -H "Authorization: Bearer <MANAGER_TOKEN>"
+curl http://localhost:3000/api/token-requests/pending \
+  -H "Authorization: Bearer <TOKEN>"
 ```
 
-### 7. Manager: approve a request
+Each item has `queueType: "manager"` or `"hr"` — use it to decide which action buttons to show.
+
+### 4. Manager approve
 
 ```bash
 curl -X PATCH http://localhost:3000/api/token-requests/<ID>/manager-approve \
   -H "Authorization: Bearer <MANAGER_TOKEN>"
 ```
 
-### 8. Manager: reject a request
+### 5. Manager reject
 
 ```bash
 curl -X PATCH http://localhost:3000/api/token-requests/<ID>/manager-reject \
@@ -289,43 +228,50 @@ curl -X PATCH http://localhost:3000/api/token-requests/<ID>/manager-reject \
   -d '{ "comment": "Budget constraints this quarter." }'
 ```
 
-### 9. Get approval queue (works for manager, HR, or both)
-
-```bash
-curl -X GET http://localhost:3000/api/token-requests/pending \
-  -H "Authorization: Bearer <TOKEN>"
-```
-
-Each item has `queueType: "manager"` or `"hr"` — use it to decide which action buttons to show.
-
-### 10. HR: final approval (deducts tokens)
+### 6. HR final approve (deducts tokens)
 
 ```bash
 curl -X PATCH http://localhost:3000/api/token-requests/<ID>/hr-approve \
   -H "Authorization: Bearer <HR_TOKEN>"
 ```
 
-### 11. Employee: resubmit a rejected request
+### 7. HR reject
 
 ```bash
-# task_offloading — replace the attachment
-curl -X PATCH http://localhost:3000/api/token-requests/<ID>/resubmit \
-  -H "Authorization: Bearer <TOKEN>" \
+curl -X PATCH http://localhost:3000/api/token-requests/<ID>/hr-reject \
+  -H "Authorization: Bearer <HR_TOKEN>" \
   -H "Content-Type: application/json" \
-  -d '{"attachmentUrl": "https://s3.../updated-form.docx"}'
-
-# learning_subsidy — update amount
-curl -X PATCH http://localhost:3000/api/token-requests/<ID>/resubmit \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"subsidyAmount": 1000}'
+  -d '{ "comment": "Not aligned with current training calendar." }'
 ```
 
-### 12. Employee: cancel a pending request
+### 8. Employee cancel
 
 ```bash
 curl -X PATCH http://localhost:3000/api/token-requests/<ID>/cancel \
   -H "Authorization: Bearer <TOKEN>"
+```
+
+### 9. Employee resubmit (after rejection)
+
+```bash
+# Replace the attachment (task_offloading or any type)
+curl -X PATCH http://localhost:3000/api/token-requests/<ID>/resubmit \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{ "attachmentUrl": "https://s3.../updated-form.docx" }'
+
+# Update subsidy amount (learning_subsidy)
+curl -X PATCH http://localhost:3000/api/token-requests/<ID>/resubmit \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{ "subsidyAmount": 1000 }'
+```
+
+### 10. Admin: list all requests (with status filter)
+
+```bash
+curl "http://localhost:3000/api/token-requests?status=pending" \
+  -H "Authorization: Bearer <ADMIN_TOKEN>"
 ```
 
 ---
@@ -335,13 +281,17 @@ curl -X PATCH http://localhost:3000/api/token-requests/<ID>/cancel \
 ### Employee — New Request Page
 
 The **New Request** page shows the 3 development option cards (from `GET /development-options`).
-When the employee clicks **"Request"** on a card, open a request form modal.
+When the employee clicks **"Request"** on a card, open a type-specific form modal.
 
-#### Request Form Modal
+> Form fields vary per type. See the type-specific guides:
+>
+> - [Task Offloading form](./task-offloading-guide.md)
+> - [Coaching form](./coaching-guide.md)
+> - [Learning Subsidy form](./learning-subsidy-guide.md)
 
-The top of the form always shows a **read-only Employee Information section** pre-filled from the
-authenticated user's profile. The frontend reads these from the JWT/`GET /auth/me` response and
-displays them — they **must not be editable**. The backend snapshots them independently.
+#### Common Read-only Employee Info Section
+
+All three forms show this at the top, pre-filled from `GET /auth/me`. These fields are **not editable** and are **not sent** in the request body — the backend snapshots them server-side.
 
 ```
 Employee Information (read-only, auto-filled)
@@ -349,53 +299,28 @@ Employee Information (read-only, auto-filled)
 Department:         [ Finance            ]
 Position:           [ Finance Officer    ]
 Manager:            [ Juan dela Cruz     ]
-Submission Date:    [ February 18, 2026  ]   ← today's date, auto-set
+Submission Date:    [ February 19, 2026  ]   ← today's date, auto-set
 Tokens to be Used:  [ 1 token            ]   ← from developmentOption.tokenCost
 ```
 
-> **Why snapshot?** If an employee transfers departments after submitting, the request must still
-> reflect their department and manager **at the time of submission**. The backend stores
-> `snapshotDepartment`, `snapshotPosition`, and `snapshotManagerName` automatically — the
-> frontend does not need to send these fields.
-
-1. **Task Offloading** form fields:
-   - Supporting Document (**required** — PDF/DOCX — the completed Task Offloading form)
-   - Upload flow: `POST /token-requests/upload-attachment` → include returned `url` as `attachmentUrl`
-   - No other fields. All request details are in the form document.
-
-2. **Coaching** form fields:
-   - Select Coach (dropdown of users with `coach` role — `GET /users?role=coach`)
-   - Notes (optional textarea — coaching goals)
-   - Supporting Document (optional)
-
-3. **Learning Subsidy** form fields:
-   - Course Name (text input, required)
-   - Provider / Platform (text input, required)
-   - Subsidy Amount (₱1,000 / ₱2,000 / ₱3,000 — toggle or select, required)
-   - Token cost is auto-calculated and displayed: `subsidyAmount / 1000` tokens
-   - Supporting Document (optional — e.g. course enrollment proof)
-
-#### File Upload Flow
+#### File Upload Flow (all types)
 
 1. Employee selects a file → immediately call `POST /token-requests/upload-attachment`
-2. Show upload progress bar
-3. On success, store the returned `url` locally — DO NOT show the raw S3 URL to the user, just show the filename
+2. Show upload progress indicator
+3. On success, store the returned `url` locally — display only the `fileName`, not the raw S3 URL
 4. On form submit, include `attachmentUrl` in the body
 
-#### Submission Validation (client-side)
+#### Pre-submission Token Check
 
-- Check `tokenCost <= availableTokens` before submitting (read from `GET /token-balances/me/dashboard`)
-- For task offloading: warn if the status badge on the card says the employee was approved last year (backend will still enforce this with a 400 error)
+Call `GET /token-balances/me/dashboard` to read `availableTokens`. Warn the employee if `tokenCost > availableTokens` — the backend will also return a 400 error if tokens are insufficient.
 
 ---
 
 ### Employee — My Request Page
 
-Show a list/table of the employee's own requests from `GET /token-requests/my`.
+Fetch `GET /token-requests/my`. Show a list/table where each row has:
 
-Each row shows:
-
-- Request type name (from `developmentOption.name`)
+- Request type name (`developmentOption.name`)
 - Token cost
 - Year
 - **Status badge** (color-coded):
@@ -410,54 +335,55 @@ Each row shows:
 
 - Submitted date (`createdAt`)
 - **Cancel button** — visible only when `status === 'pending'`; calls `PATCH /:id/cancel`
-- On click of a row, open a detail drawer/modal showing full `formData`, attachment link, and rejection comment if rejected
+- **Resubmit button** — visible only when `status === 'rejected'`; opens type-specific edit modal
+- Row click → detail drawer showing `formData`, attachment link, snapshot info, rejection comment
 
 ---
 
 ### Approval Page (Manager + HR — unified)
 
-Fetch `GET /token-requests/pending`. The response is a merged list of:
+Fetch `GET /token-requests/pending`. The response merges:
 
-- Items where `queueType === 'manager'` — the user is the assigned manager; status is `pending`
-- Items where `queueType === 'hr'` — manager has already approved; status is `manager_approved`
+- `queueType === 'manager'` items — user is the assigned manager; status is `pending`
+- `queueType === 'hr'` items — manager already approved; status is `manager_approved`
 
-A user with **both** `approver` and `hr_approver` roles will see both sets in one response.
+A user with **both** `approver` and `hr_approver` roles sees both sets.
 
-Each row shows:
+Each row:
 
-- Employee name + department
+- Employee name + department (use snapshot fields)
 - Request type
 - Token cost
 - Submitted date
-- **Action buttons depend on `queueType`:**
+- Action buttons keyed on `queueType`:
 
 | `queueType` | Approve endpoint                           | Reject endpoint             |
 | ----------- | ------------------------------------------ | --------------------------- |
 | `manager`   | `PATCH /:id/manager-approve`               | `PATCH /:id/manager-reject` |
 | `hr`        | `PATCH /:id/hr-approve` _(deducts tokens)_ | `PATCH /:id/hr-reject`      |
 
-After either action, remove the row from the list optimistically or refetch.
+Show a confirmation modal with a comment textarea for all reject actions.
+Refetch or optimistically remove the row after each action.
 
 ---
 
 ### Admin — All Requests View
 
-Table of all requests from `GET /token-requests?status=<filter>`.
+Table from `GET /token-requests?status=<filter>`.
 
 - Filter tabs: All / Pending / Manager Approved / Approved / Rejected / Cancelled
-- Read-only view with full detail drawer on row click
+- Read-only; full detail drawer on row click
 
 ---
 
 ## 🚀 Implementation Steps
 
-### Phase 1 — Employee: Submit a Request
+### Phase 1 — Request Submission
 
-1. On the Development Options page, wire the **"Request"** button to open a type-specific form modal.
-2. Build the form fields per type (see above).
-3. Implement the pre-upload flow for Task Offloading (required) and other types (optional):
+1. Wire the **"Request"** button on each Development Option card to open the matching form modal.
+2. Implement the shared file upload helper (reused across all forms):
    ```typescript
-   async function handleFileSelect(file: File) {
+   async function uploadAttachment(file: File, token: string) {
      const form = new FormData();
      form.append('file', file);
      const res = await fetch('/api/token-requests/upload-attachment', {
@@ -465,32 +391,31 @@ Table of all requests from `GET /token-requests?status=<filter>`.
        headers: { Authorization: `Bearer ${token}` },
        body: form,
      });
-     const { url, fileName } = await res.json();
-     setAttachmentUrl(url);
-     setAttachmentFileName(fileName); // display the filename, not the raw S3 URL
+     return res.json() as Promise<{
+       url: string;
+       key: string;
+       fileName: string;
+     }>;
    }
    ```
-4. On submit, call the type-specific endpoint:
-   - Task Offloading → `POST /token-requests/task-offloading` with `{ developmentOptionId, attachmentUrl }`
-   - Coaching → `POST /token-requests/coaching` with `{ developmentOptionId, coachId, notes?, attachmentUrl? }`
-   - Learning Subsidy → `POST /token-requests/learning-subsidy` with `{ developmentOptionId, courseName, provider, subsidyAmount, attachmentUrl? }`
-5. Show success toast + redirect to My Request page.
+3. Build each type-specific form modal (see individual guides).
+4. On submit, call the appropriate typed endpoint and show a success toast.
 
-### Phase 2 — Employee: My Request Page
+### Phase 2 — My Request Page
 
-6. Fetch `GET /token-requests/my` on mount.
-7. Render status badge using the color table above.
-8. Wire Cancel button to `PATCH /:id/cancel` with optimistic UI update.
-9. Add request detail modal showing `formData` fields and rejection comment.
+5. Fetch `GET /token-requests/my` on mount.
+6. Render status badges with the colour table above.
+7. Wire Cancel → `PATCH /:id/cancel` with optimistic UI removal.
+8. Wire Resubmit → re-open the type-specific form modal pre-filled with existing `formData`.
+9. Row click → detail drawer.
 
-### Phase 3 — Approval Page (Manager + HR)
+### Phase 3 — Approval Page
 
-10. Fetch `GET /token-requests/pending` on mount (shown for users with `approver` or `hr_approver` role).
-11. Render rows. For each row, check `queueType`:
-    - `queueType === 'manager'` → show **Approve** (`manager-approve`) and **Reject** (`manager-reject`) buttons
-    - `queueType === 'hr'` → show **Final Approve** (`hr-approve`) and **Reject** (`hr-reject`) buttons with a token deduction warning
-12. For Reject: show a comment textarea in a confirmation modal before calling the endpoint.
-13. Refetch queue after each action.
+10. Show for users with `approver` or `hr_approver` role.
+11. Fetch `GET /token-requests/pending` on mount.
+12. Render rows; derive action buttons from `queueType`.
+13. For rejections, show comment modal before calling the endpoint.
+14. Refetch after each action.
 
 ---
 
@@ -498,11 +423,11 @@ Table of all requests from `GET /token-requests?status=<filter>`.
 
 ### Must Have
 
-- [ ] Employee can submit all 3 request types via their dedicated endpoints
-- [ ] Task Offloading requires an attachment; form rejects submission without one
-- [ ] File upload works before submission and `attachmentUrl` is included in the request
-- [ ] My Request page shows history with correct status badges
+- [ ] Employee can submit all 3 request types
+- [ ] File upload works; returned URL is sent as `attachmentUrl`
+- [ ] My Requests page shows history with correct status badges
 - [ ] Employee can cancel a pending request
+- [ ] Rejected employee can resubmit
 - [ ] Manager sees their pending queue and can approve or reject with a comment
 - [ ] HR sees the manager-approved queue and can do final approve/reject
 - [ ] Token deduction happens only on HR approval
@@ -512,11 +437,13 @@ Table of all requests from `GET /token-requests?status=<filter>`.
 - [ ] Token balance check before submission (client-side warning)
 - [ ] Toast notifications after each action
 - [ ] Loading states on all async actions
-- [ ] Rejection comment visible in request detail modal
-- [ ] Attachment download link in request detail
+- [ ] Rejection comment visible in request detail drawer
+- [ ] Snapshot fields (department, position, manager) shown in detail drawer
 
 ### Nice to Have
 
-- [ ] Real-time queue updates (polling or WebSocket) for manager/HR pages
-- [ ] Email notification preview in the detail modal
+- [ ] Real-time queue updates (polling or WebSocket)
 - [ ] Request timeline showing each status transition with timestamp
+- [ ] Email notification preview in the detail drawer
+
+

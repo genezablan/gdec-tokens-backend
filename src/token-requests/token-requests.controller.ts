@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Param,
   Body,
   Query,
@@ -13,11 +14,13 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { TokenRequestsService } from './token-requests.service';
+import { CoachingSessionsService } from './coaching-sessions.service';
 import { CreateTaskOffloadingRequestDto } from './dto/create-task-offloading-request.dto';
 import { CreateCoachingRequestDto } from './dto/create-coaching-request.dto';
 import { CreateLearningSubsidyRequestDto } from './dto/create-learning-subsidy-request.dto';
 import { RejectTokenRequestDto } from './dto/reject-token-request.dto';
 import { ResubmitTokenRequestDto } from './dto/resubmit-token-request.dto';
+import { BookSessionDto } from './dto/book-session.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { User } from '../entities/user.entity';
@@ -28,6 +31,7 @@ import { S3Service } from '../common/services/s3.service';
 export class TokenRequestsController {
   constructor(
     private readonly tokenRequestsService: TokenRequestsService,
+    private readonly coachingSessionsService: CoachingSessionsService,
     private readonly s3Service: S3Service,
   ) {}
 
@@ -217,5 +221,75 @@ export class TokenRequestsController {
     @CurrentUser() user: User,
   ) {
     return this.tokenRequestsService.cancel(id, user.id);
+  }
+
+  // ─── Coaching Sessions ────────────────────────────────────────────────────────
+
+  /**
+   * GET /token-requests/:id/sessions
+   * View all coaching sessions for a request.
+   * Accessible to the employee, the coach, approvers, and admins.
+   */
+  @Get(':id/sessions')
+  getSessions(@Param('id', ParseUUIDPipe) id: string) {
+    return this.coachingSessionsService.findSessions(id);
+  }
+
+  /**
+   * POST /token-requests/:id/sessions
+   * Book the next session slot (1 → 2 → 3) for an approved coaching request.
+   * Either the employee or the assigned coach can book.
+   */
+  @Post(':id/sessions')
+  bookSession(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+    @Body() dto: BookSessionDto,
+  ) {
+    return this.coachingSessionsService.bookSession(id, user.id, dto);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/complete
+   * Coach marks a session as completed, optionally with notes.
+   * Body: { notes?: string }
+   */
+  @Patch(':id/sessions/:sessionId/complete')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  completeSession(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+    @Body('notes') notes?: string,
+  ) {
+    return this.coachingSessionsService.completeSession(id, sessionId, user.id, notes);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/no-show
+   * Coach marks the employee as a no-show. Releases the slot for rebooking.
+   */
+  @Patch(':id/sessions/:sessionId/no-show')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  markNoShow(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.coachingSessionsService.markNoShow(id, sessionId, user.id);
+  }
+
+  /**
+   * DELETE /token-requests/:id/sessions/:sessionId
+   * Cancel a scheduled session. Releases the availability slot.
+   * Either the employee or the coach can cancel.
+   */
+  @Delete(':id/sessions/:sessionId')
+  cancelSession(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.coachingSessionsService.cancelSession(id, sessionId, user.id);
   }
 }

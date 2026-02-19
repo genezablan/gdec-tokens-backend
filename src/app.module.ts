@@ -9,6 +9,7 @@ import { CommonModule } from './common/common.module';
 import { DevelopmentOptionsModule } from './development-options/development-options.module';
 import { TokenBalancesModule } from './token-balances/token-balances.module';
 import { TokenRequestsModule } from './token-requests/token-requests.module';
+import { CoachAvailabilityModule } from './coach-availability/coach-availability.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import { databaseConfig, s3Config, sesConfig } from './config';
@@ -40,6 +41,7 @@ import { databaseConfig, s3Config, sesConfig } from './config';
     DevelopmentOptionsModule,
     TokenBalancesModule,
     TokenRequestsModule,
+    CoachAvailabilityModule,
   ],
   controllers: [AppController],
   providers: [

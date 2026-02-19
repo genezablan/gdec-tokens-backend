@@ -44,3 +44,10 @@ export enum RequestStatus {
   REJECTED = 'rejected',                  // Rejected by manager or HR
   CANCELLED = 'cancelled',                // Cancelled by employee
 }
+
+export enum CoachingSessionStatus {
+  SCHEDULED = 'scheduled',    // Session is booked, not yet done
+  COMPLETED = 'completed',    // Coach marked the session as done
+  NO_SHOW = 'no_show',        // Employee did not attend
+  CANCELLED = 'cancelled',    // Session was cancelled
+}

@@ -26,7 +26,8 @@
     "import:employees": "ts-node -r tsconfig-paths/register scripts/import-employees.ts",
     "import:ops-gmail": "ts-node -r tsconfig-paths/register scripts/import-ops-gmail.ts",
     "link:supervisors": "ts-node -r tsconfig-paths/register scripts/link-supervisors.ts",
-    "seed:approver-roles": "ts-node -r tsconfig-paths/register scripts/seed-approver-roles.ts"
+    "seed:approver-roles": "ts-node -r tsconfig-paths/register scripts/seed-approver-roles.ts",
+    "seed:coach-roles": "ts-node -r tsconfig-paths/register scripts/seed-coach-roles.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.992.0",
