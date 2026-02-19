@@ -3,8 +3,8 @@ import {
   NotFoundException,
   BadRequestException,
   Logger,
+  OnApplicationBootstrap,
 } from '@nestjs/common';
-import { OnApplicationBootstrap } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { DevelopmentOption } from '../entities/development-option.entity';
@@ -110,18 +110,14 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
 
 
   /**
-   * Admin: upload a form template to S3 and save the URL.
+   * Admin: get a presigned PUT URL for uploading a form template directly from the browser.
    */
-  async uploadFormTemplate(
+  async getFormTemplatePresignedUpload(
     id: string,
-    file: Express.Multer.File,
-    updatedById: string,
-  ): Promise<DevelopmentOption> {
+    fileName: string,
+    contentType: string,
+  ): Promise<{ uploadUrl: string; fileUrl: string; key: string }> {
     const option = await this.findOne(id);
-
-    if (!file) {
-      throw new BadRequestException('No file provided');
-    }
 
     const allowedMimeTypes = [
       'application/pdf',
@@ -129,27 +125,34 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     ];
 
-    if (!allowedMimeTypes.includes(file.mimetype)) {
+    if (!allowedMimeTypes.includes(contentType)) {
       throw new BadRequestException(
         'Invalid file type. Only PDF and Word documents are allowed.',
       );
     }
 
-    const result = await this.s3Service.uploadFile(
-      file.buffer,
-      `form-templates/${option.type}/${file.originalname}`,
-      {
-        contentType: file.mimetype,
-        metadata: {
-          optionType: option.type,
-          uploadedById: updatedById,
-        },
-      },
+    return this.s3Service.generateFormTemplatePresignedUploadUrl(
+      option.type,
+      fileName,
+      contentType,
     );
+  }
 
-    option.formTemplateUrl = result.url;
-    option.formTemplateKey = result.key;
-    option.formTemplateFileName = file.originalname;
+  /**
+   * Admin: save the form template metadata after the browser has uploaded directly to S3.
+   */
+  async saveFormTemplate(
+    id: string,
+    fileUrl: string,
+    fileName: string,
+    key: string,
+    updatedById: string,
+  ): Promise<DevelopmentOption> {
+    const option = await this.findOne(id);
+
+    option.formTemplateUrl = fileUrl;
+    option.formTemplateKey = key;
+    option.formTemplateFileName = fileName;
     option.updatedById = updatedById;
 
     return this.developmentOptionRepository.save(option);

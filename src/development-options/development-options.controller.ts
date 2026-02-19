@@ -5,12 +5,10 @@ import {
   Post,
   Param,
   Body,
-  UseInterceptors,
-  UploadedFile,
   ParseUUIDPipe,
   Query,
+  BadRequestException,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
 import { DevelopmentOptionsService } from './development-options.service';
 import { UpdateDevelopmentOptionDto } from './dto/update-development-option.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -81,18 +79,41 @@ export class DevelopmentOptionsController {
   }
 
   /**
-   * POST /api/development-options/:id/template
-   * Admin only: upload a form template (PDF or Word) to S3.
+   * GET /api/development-options/:id/template/presigned-upload
+   * Admin only: get a pre-signed S3 PUT URL so the browser can upload directly.
+   * Query params: fileName, contentType
    */
-  @Post(':id/template')
+  @Get(':id/template/presigned-upload')
   @Roles(UserRole.ADMIN)
-  @UseInterceptors(FileInterceptor('file'))
-  uploadTemplate(
+  getTemplatePresignedUpload(
     @Param('id', ParseUUIDPipe) id: string,
-    @UploadedFile() file: Express.Multer.File,
+    @Query('fileName') fileName: string,
+    @Query('contentType') contentType: string,
+  ) {
+    if (!fileName || !contentType) {
+      throw new BadRequestException('fileName and contentType query params are required');
+    }
+    return this.developmentOptionsService.getFormTemplatePresignedUpload(id, fileName, contentType);
+  }
+
+  /**
+   * PATCH /api/development-options/:id/template
+   * Admin only: save form template metadata after browser has uploaded directly to S3.
+   * Body: { fileUrl, fileName, key }
+   */
+  @Patch(':id/template')
+  @Roles(UserRole.ADMIN)
+  saveTemplate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body('fileUrl') fileUrl: string,
+    @Body('fileName') fileName: string,
+    @Body('key') key: string,
     @CurrentUser('id') userId: string,
   ) {
-    return this.developmentOptionsService.uploadFormTemplate(id, file, userId);
+    if (!fileUrl || !fileName || !key) {
+      throw new BadRequestException('fileUrl, fileName, and key are required');
+    }
+    return this.developmentOptionsService.saveFormTemplate(id, fileUrl, fileName, key, userId);
   }
 
   /**

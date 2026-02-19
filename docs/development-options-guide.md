@@ -34,8 +34,9 @@ All endpoints require `Authorization: Bearer <token>` header.
 | `GET`   | `/development-options/:id`                   | Get a single development option by UUID                             | Any authenticated user |
 | `PATCH` | `/development-options/:id`                   | Update name, description, tokenCost, isActive, rules                | Admin only             |
 | `PATCH` | `/development-options/:id/toggle`            | Flip isActive on/off                                                | Admin only             |
-| `GET`   | `/development-options/:id/template/download` | Get a pre-signed download URL for the form template (15 min expiry) | Any authenticated user |
-| `POST`  | `/development-options/:id/template`          | Upload/replace blank form template (multipart)                      | Admin only             |
+| `GET`   | `/development-options/:id/template/download`          | Get a pre-signed download URL for the form template (15 min expiry) | Any authenticated user |
+| `GET`   | `/development-options/:id/template/presigned-upload?fileName=x&contentType=y` | Get a pre-signed S3 PUT URL for direct browser upload | Admin only             |
+| `PATCH` | `/development-options/:id/template`                   | Save form template metadata after browser uploads to S3             | Admin only             |
 | `POST`  | `/development-options/seed`                  | Re-run seed if options are missing                                  | Admin only             |
 
 ### ⚠️ Important Notes
@@ -45,7 +46,7 @@ All endpoints require `Authorization: Bearer <token>` header.
 - The 3 types (`task_offloading`, `coaching`, `learning_subsidy`) are seeded automatically on server start; the **POST /seed** endpoint is a manual fallback
 - `tokenCost` is admin-configurable — **always read it from the API**, never hardcode token values in the frontend
 - `rules` is a JSON object whose shape differs per type (see Data Models below)
-- Form template uploads must be `multipart/form-data` with field name `file`
+- Form template uploads use a **two-step presigned S3 upload** — browser PUTs directly to S3, then calls `PATCH /:id/template` to save the metadata
 
 ---
 
@@ -182,9 +183,23 @@ curl -X PATCH http://localhost:3000/api/development-options/<ID>/toggle \
 ### 6. Upload a form template (admin)
 
 ```bash
-curl -X POST http://localhost:3000/api/development-options/<ID>/template \
+# Step 1 — get presigned PUT URL
+curl "http://localhost:3000/api/development-options/<ID>/template/presigned-upload?fileName=form-template.pdf&contentType=application%2Fpdf" \
+  -H "Authorization: Bearer <TOKEN>"
+
+# Response:
+# { "uploadUrl": "https://...", "fileUrl": "https://...", "key": "form-templates/..." }
+
+# Step 2 — PUT the file directly to S3 using uploadUrl
+curl -X PUT "<uploadUrl>" \
+  -H "Content-Type: application/pdf" \
+  --data-binary @/path/to/form-template.pdf
+
+# Step 3 — save the metadata
+curl -X PATCH http://localhost:3000/api/development-options/<ID>/template \
   -H "Authorization: Bearer <TOKEN>" \
-  -F "file=@/path/to/form-template.pdf"
+  -H "Content-Type: application/json" \
+  -d '{"fileUrl": "<fileUrl>", "fileName": "form-template.pdf", "key": "<key>"}'
 ```
 
 ### 7. Get a pre-signed download URL for the form template
@@ -313,12 +328,25 @@ Each card must show:
 
 11. On file select, build a `FormData` object:
 
-    ```typescript
-    const form = new FormData();
-    form.append('file', selectedFile);
-    ```
+12. Call `GET /development-options/:id/template/presigned-upload?fileName=...&contentType=...` to get `{ uploadUrl, fileUrl, key }`.
 
-12. Call `POST /development-options/:id/template` with `Content-Type: multipart/form-data` (do **not** set Content-Type manually — let the browser set the boundary).
+    ```typescript
+    // Step 1: get presigned URL
+    const { uploadUrl, fileUrl, key } = await fetch(
+      `/api/development-options/${id}/template/presigned-upload?fileName=${encodeURIComponent(file.name)}&contentType=${encodeURIComponent(file.type)}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    ).then(r => r.json());
+
+    // Step 2: PUT directly to S3
+    await fetch(uploadUrl, { method: 'PUT', headers: { 'Content-Type': file.type }, body: file });
+
+    // Step 3: save metadata
+    await fetch(`/api/development-options/${id}/template`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileUrl, fileName: file.name, key }),
+    });
+    ```
 
 13. On success, update the card to show the new `formTemplateFileName` and `formTemplateUrl`.
 

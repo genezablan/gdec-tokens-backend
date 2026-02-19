@@ -182,4 +182,29 @@ export class S3Service {
 
     return { uploadUrl, fileUrl, key };
   }
+
+  /**
+   * Generates a pre-signed PUT URL for uploading a form template directly from the browser.
+   * Key pattern: form-templates/<optionType>/<uuid>/<filename>
+   * Expires in 5 minutes.
+   */
+  async generateFormTemplatePresignedUploadUrl(
+    optionType: string,
+    filename: string,
+    contentType: string,
+  ): Promise<{ uploadUrl: string; fileUrl: string; key: string }> {
+    const key = `form-templates/${optionType}/${uuidv4()}/${filename}`;
+    const region = this.configService.get<string>('s3.region') || 'ap-southeast-1';
+
+    const command = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+      ContentType: contentType,
+    });
+
+    const uploadUrl = await getSignedUrl(this.s3Client, command, { expiresIn: 300 });
+    const fileUrl = `https://${this.bucketName}.s3.${region}.amazonaws.com/${key}`;
+
+    return { uploadUrl, fileUrl, key };
+  }
 }
