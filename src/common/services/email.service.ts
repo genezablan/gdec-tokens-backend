@@ -370,25 +370,23 @@ export class EmailService {
     const { employeeEmail, employeeName, optionName, comment } = opts;
 
     const content = `
-      <p style="margin:0 0 8px;">Hi <strong>${employeeName}</strong>,</p>
-      <p style="margin:0 0 20px;">We regret to inform you that your Development Token request has <strong style="color:${BRAND.red};">not been approved</strong> at this time.</p>
+      <p style="margin:0 0 20px;">Hello <strong>${employeeName}</strong>,</p>
+      <p style="margin:0 0 20px;color:${BRAND.textDark};">Your Development Token request has been reviewed and was not approved at this time.</p>
 
-      <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 20px;">
-        ${this.detailRow('Development Option:', optionName)}
-        ${this.detailRow('Reviewer\'s Comment:', `<em>${comment}</em>`)}
-      </table>
+      <p style="margin:0 0 8px;font-weight:600;color:${BRAND.textDark};">Reason / Remarks:</p>
+      <div style="background:${BRAND.body};border-left:4px solid ${BRAND.red};padding:12px 16px;margin:0 0 20px;border-radius:0 4px 4px 0;color:${BRAND.textDark};">${comment}</div>
 
-      <p style="margin:0 0 8px;color:${BRAND.textMuted};font-size:14px;">No tokens have been deducted from your balance.</p>
-      <p style="margin:0;color:${BRAND.textMuted};font-size:14px;">If you have questions about this decision, please reach out to your Manager or HR. You may also resubmit with updated information.</p>
+      <p style="margin:0 0 12px;color:${BRAND.textDark};">You may revise and resubmit your request through the application once the necessary updates are made.</p>
+      <p style="margin:0 0 20px;color:${BRAND.textDark};">If you need clarification, please reach out to your Manager or HR.</p>
 
-      ${this.button('View My Requests', `${this.frontendUrl}/my-requests`)}
+      ${this.button('Resubmit Request', `${this.frontendUrl}/my-requests`, BRAND.navy)}
     `;
 
     await this.sendEmail({
       to: employeeEmail,
-      subject: `Development Token Request Not Approved — ${optionName}`,
+      subject: 'Update on Your Development Token Request — Rejected',
       htmlBody: this.buildTemplate(content),
-      textBody: `Hi ${employeeName},\n\nYour Development Token request for ${optionName} has not been approved.\n\nReviewer's Comment: ${comment}\n\nNo tokens have been deducted from your balance.\n\nBest regards,\nGreat Deals Academy`,
+      textBody: `Hello ${employeeName},\n\nYour Development Token request has been reviewed and was not approved at this time.\n\nReason / Remarks:\n${comment}\n\nYou may revise and resubmit your request through the application once the necessary updates are made.\n\nIf you need clarification, please reach out to your Manager or HR.\n\nBest regards,\nGreat Deals Academy`,
     });
   }
 
