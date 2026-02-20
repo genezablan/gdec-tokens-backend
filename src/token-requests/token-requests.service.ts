@@ -132,15 +132,33 @@ export class TokenRequestsService {
     await this.requestRepo.save(request);
     this.logger.log(`Token request created: ${request.id} by employee ${employeeId}`);
 
+    // ── Notify employee: submission confirmation ──
     try {
-      await this.emailService.sendRequestNotification(
-        manager.email,
-        `${employee.firstName} ${employee.lastName}`,
-        request.type,
-        request.id,
-      );
+      await this.emailService.sendSubmissionConfirmation({
+        employeeEmail: employee.email,
+        employeeName: `${employee.firstName} ${employee.lastName}`,
+        optionName: optionType,
+        tokenCost,
+        submissionDate: new Date(),
+      });
     } catch (err: unknown) {
-      this.logger.warn(`Failed to send manager notification: ${(err as Error).message}`);
+      this.logger.warn(`Failed to send submission confirmation: ${(err as Error).message}`);
+    }
+
+    // ── Notify manager/coach: review required ──
+    try {
+      await this.emailService.sendFirstLevelReviewNotification({
+        approverEmail: manager.email,
+        approverName: `${manager.firstName} ${manager.lastName}`,
+        approverRole: optionType === DevelopmentOptionType.COACHING ? 'Coach' : 'Manager',
+        employeeName: `${employee.firstName} ${employee.lastName}`,
+        optionName: optionType,
+        tokenCost,
+        submissionDate: new Date(),
+        requestId: request.id,
+      });
+    } catch (err: unknown) {
+      this.logger.warn(`Failed to send first-level reviewer notification: ${(err as Error).message}`);
     }
 
     return this.findRequest(request.id);
@@ -330,12 +348,19 @@ export class TokenRequestsService {
 
     if (hrUser) {
       try {
-        await this.emailService.sendRequestNotification(
-          hrUser.email,
-          `${request.employee.firstName} ${request.employee.lastName}`,
-          request.developmentOption.name,
-          request.id,
-        );
+        const firstApprover = await this.userRepo.findOne({ where: { id: request.managerId } });
+        await this.emailService.sendHrReviewNotification({
+          hrEmail: hrUser.email,
+          hrName: `${hrUser.firstName} ${hrUser.lastName}`,
+          employeeName: `${request.employee.firstName} ${request.employee.lastName}`,
+          optionName: request.developmentOption?.name ?? request.type,
+          tokenCost: request.tokenCost,
+          firstApproverName: firstApprover
+            ? `${firstApprover.firstName} ${firstApprover.lastName}`
+            : request.snapshotManagerName,
+          firstApproverRole: request.type === DevelopmentOptionType.COACHING ? 'Coach' : 'Manager',
+          requestId: request.id,
+        });
       } catch (err: unknown) {
         this.logger.warn(`Failed to send HR notification: ${(err as Error).message}`);
       }
@@ -366,11 +391,12 @@ export class TokenRequestsService {
 
     // ── Notify employee ──
     try {
-      await this.emailService.sendApprovalNotification(
-        request.employee.email,
-        `${request.employee.firstName} ${request.employee.lastName}`,
-        request.developmentOption?.name ?? request.type,
-      );
+      await this.emailService.sendApprovalNotification({
+        employeeEmail: request.employee.email,
+        employeeName: `${request.employee.firstName} ${request.employee.lastName}`,
+        optionName: request.developmentOption?.name ?? request.type,
+        tokenCost: request.tokenCost,
+      });
     } catch (err: unknown) {
       this.logger.warn(`Failed to send approval email: ${(err as Error).message}`);
     }
@@ -413,12 +439,12 @@ export class TokenRequestsService {
 
     // ── Notify employee ──
     try {
-      await this.emailService.sendRejectionNotification(
-        request.employee.email,
-        `${request.employee.firstName} ${request.employee.lastName}`,
-        request.developmentOption?.name ?? request.type,
-        dto.comment,
-      );
+      await this.emailService.sendRejectionNotification({
+        employeeEmail: request.employee.email,
+        employeeName: `${request.employee.firstName} ${request.employee.lastName}`,
+        optionName: request.developmentOption?.name ?? request.type,
+        comment: dto.comment,
+      });
     } catch (err: unknown) {
       this.logger.warn(`Failed to send rejection email: ${(err as Error).message}`);
     }
@@ -530,16 +556,20 @@ export class TokenRequestsService {
     await this.requestRepo.save(request);
     this.logger.log(`Request ${requestId} resubmitted by employee ${employeeId}`);
 
-    // ── Re-notify manager ──
+    // ── Re-notify manager/coach ──
     const manager = await this.userRepo.findOne({ where: { id: request.managerId } });
     if (manager) {
       try {
-        await this.emailService.sendRequestNotification(
-          manager.email,
-          `${request.employee.firstName} ${request.employee.lastName}`,
-          request.type,
-          request.id,
-        );
+        await this.emailService.sendFirstLevelReviewNotification({
+          approverEmail: manager.email,
+          approverName: `${manager.firstName} ${manager.lastName}`,
+          approverRole: request.type === DevelopmentOptionType.COACHING ? 'Coach' : 'Manager',
+          employeeName: `${request.employee.firstName} ${request.employee.lastName}`,
+          optionName: request.developmentOption?.name ?? request.type,
+          tokenCost: request.tokenCost,
+          submissionDate: new Date(),
+          requestId: request.id,
+        });
       } catch (err: unknown) {
         this.logger.warn(`Failed to send resubmit notification: ${(err as Error).message}`);
       }
