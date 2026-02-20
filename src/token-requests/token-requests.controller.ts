@@ -97,10 +97,11 @@ export class TokenRequestsController {
    * GET /token-requests/pending
    * Combined approval queue — returns items from both manager queue and HR queue
    * depending on the current user's roles. Each item includes `queueType: 'manager' | 'hr'`.
-   * Accessible to: approver, hr_approver, admin.
+   * Accessible to: approver, coach, hr_approver, admin.
+   * Coaches see their assigned pending coaching requests.
    */
   @Get('pending')
-  @Roles(UserRole.APPROVER, UserRole.HR_APPROVER as UserRole, UserRole.ADMIN)
+  @Roles(UserRole.APPROVER, UserRole.COACH, UserRole.HR_APPROVER as UserRole, UserRole.ADMIN)
   getApprovalQueue(@CurrentUser() user: User) {
     return this.tokenRequestsService.findApprovalQueue(user);
   }
@@ -117,13 +118,21 @@ export class TokenRequestsController {
 
   /**
    * GET /token-requests
-   * Admin: view all requests, optionally filtered by status.
-   * ?status=pending | manager_approved | approved | rejected | cancelled
+   * Admin: view all requests.
+   * Filter by exact status: ?status=pending | manager_approved | approved | rejected | cancelled
+   * Filter by tab group:    ?tab=active | completed | rejected
+   *   active    → pending + manager_approved
+   *   completed → approved
+   *   rejected  → rejected + cancelled
+   * tab takes precedence over status if both are provided.
    */
   @Get()
   @Roles(UserRole.ADMIN)
-  findAll(@Query('status') status?: RequestStatus) {
-    return this.tokenRequestsService.findAll(status);
+  findAll(
+    @Query('status') status?: RequestStatus,
+    @Query('tab') tab?: string,
+  ) {
+    return this.tokenRequestsService.findAll(status, tab);
   }
 
   /**
@@ -157,10 +166,11 @@ export class TokenRequestsController {
 
   /**
    * PATCH /token-requests/:id/manager-approve
-   * Manager: approve a pending request (moves to manager_approved).
+   * Manager approves a pending task-offloading or learning-subsidy request.
+   * Coach approves a pending coaching request (they are stored as managerId).
    */
   @Patch(':id/manager-approve')
-  @Roles(UserRole.APPROVER, UserRole.ADMIN)
+  @Roles(UserRole.APPROVER, UserRole.COACH, UserRole.ADMIN)
   managerApprove(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: User,
@@ -183,10 +193,11 @@ export class TokenRequestsController {
 
   /**
    * PATCH /token-requests/:id/manager-reject
-   * Manager: reject a pending request.
+   * Manager rejects a pending task-offloading or learning-subsidy request.
+   * Coach rejects a pending coaching request.
    */
   @Patch(':id/manager-reject')
-  @Roles(UserRole.APPROVER, UserRole.ADMIN)
+  @Roles(UserRole.APPROVER, UserRole.COACH, UserRole.ADMIN)
   managerReject(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: User,

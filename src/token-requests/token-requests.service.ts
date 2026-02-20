@@ -6,7 +6,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import { TokenRequest } from '../entities/token-request.entity';
 import { User } from '../entities/user.entity';
 import { DevelopmentOption } from '../entities/development-option.entity';
@@ -198,17 +198,27 @@ export class TokenRequestsService {
 
   /**
    * POST /token-requests/coaching
-   * Costs 2 tokens. Coach must exist and have the coach role.
+   * Costs 2 tokens.
+   * Approval flow: Employee → Coach (first-level) → HR (final) → tokens deducted.
+   * The coach is stored as managerId so the standard approve/reject routing works.
    */
   async createCoaching(
     employeeId: string,
     dto: CreateCoachingRequestDto,
   ): Promise<TokenRequest> {
-    const { employee, option, year, balance, manager } = await this.prepareRequest(
-      employeeId,
-      dto.developmentOptionId,
-      DevelopmentOptionType.COACHING,
-    );
+    // Manually prepare — coaching does not require the supervisor to have approver role.
+    const employee = await this.userRepo.findOne({ where: { id: employeeId } });
+    if (!employee) throw new NotFoundException('Employee not found');
+
+    const option = await this.optionRepo.findOne({ where: { id: dto.developmentOptionId } });
+    if (!option) throw new NotFoundException('Development option not found');
+    if (!option.isActive) throw new BadRequestException('This development option is currently inactive');
+    if (option.type !== DevelopmentOptionType.COACHING) {
+      throw new BadRequestException(`Expected a coaching option, got ${option.type}`);
+    }
+
+    const year = new Date().getFullYear();
+    const balance = await this.tokenBalancesService.getBalance(employeeId, year);
 
     // Validate coach
     const coach = await this.userRepo.findOne({ where: { id: dto.coachId } });
@@ -226,15 +236,17 @@ export class TokenRequestsService {
       );
     }
 
+    // Use coach as the first-level approver (managerId = coach.id).
+    // snapshotManagerName captures the coach's name as the first approver.
     return this.saveAndNotify({
       employeeId,
       optionId: option.id,
       optionType: option.type,
       tokenCost: option.tokenCost,
       year,
-      managerId: manager.id,
+      managerId: coach.id,   // ← coach, not supervisor
       employee,
-      manager,
+      manager: coach,         // ← notifies coach by email
       formData: {
         coachId: dto.coachId,
         coachName: `${coach.firstName} ${coach.lastName}`,
@@ -557,6 +569,7 @@ export class TokenRequestsService {
   ): Promise<(TokenRequest & { queueType: 'manager' | 'hr' })[]> {
     const results: (TokenRequest & { queueType: 'manager' | 'hr' })[] = [];
 
+    // Managers (approver role) see pending non-coaching requests assigned to them.
     if (user.roles.includes(UserRole.APPROVER) || user.roles.includes(UserRole.ADMIN as UserRole)) {
       const managerItems = await this.requestRepo.find({
         where: { managerId: user.id, status: RequestStatus.PENDING },
@@ -564,6 +577,26 @@ export class TokenRequestsService {
         order: { createdAt: 'ASC' },
       });
       results.push(...managerItems.map((r) => Object.assign(r, { queueType: 'manager' as const })));
+    }
+
+    // Coaches see pending coaching requests where they are the assigned coach (managerId = their id).
+    if (user.roles.includes(UserRole.COACH)) {
+      const coachItems = await this.requestRepo.find({
+        where: {
+          managerId: user.id,
+          status: RequestStatus.PENDING,
+          type: DevelopmentOptionType.COACHING,
+        },
+        relations: ['employee', 'developmentOption'],
+        order: { createdAt: 'ASC' },
+      });
+      // Only add items not already in results (in case user has both coach + approver roles)
+      const existingIds = new Set(results.map((r) => r.id));
+      results.push(
+        ...coachItems
+          .filter((r) => !existingIds.has(r.id))
+          .map((r) => Object.assign(r, { queueType: 'manager' as const })),
+      );
     }
 
     if (
@@ -590,9 +623,27 @@ export class TokenRequestsService {
     });
   }
 
-  /** Admin: all requests, optionally filtered by status. */
-  async findAll(status?: RequestStatus): Promise<TokenRequest[]> {
-    const where = status ? { status } : {};
+  /**
+   * Admin: all requests.
+   * Filter priority: tab > status > none.
+   * tab=active      → pending + manager_approved
+   * tab=completed   → approved
+   * tab=rejected    → rejected + cancelled
+   */
+  async findAll(status?: RequestStatus, tab?: string): Promise<TokenRequest[]> {
+    const TAB_STATUSES: Record<string, RequestStatus[]> = {
+      active: [RequestStatus.PENDING, RequestStatus.MANAGER_APPROVED as RequestStatus],
+      completed: [RequestStatus.APPROVED],
+      rejected: [RequestStatus.REJECTED, RequestStatus.CANCELLED],
+    };
+
+    let where: object = {};
+    if (tab && TAB_STATUSES[tab]) {
+      where = { status: In(TAB_STATUSES[tab]) };
+    } else if (status) {
+      where = { status };
+    }
+
     return this.requestRepo.find({
       where,
       relations: ['employee', 'manager', 'hr', 'developmentOption'],
