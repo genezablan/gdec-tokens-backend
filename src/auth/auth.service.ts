@@ -9,10 +9,12 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
 import { User } from '../entities/user.entity';
 import { AuthProvider } from '../common/enums';
-import { ChangePasswordDto } from './dto';
+import { ChangePasswordDto, ForgotPasswordDto, ResetPasswordDto } from './dto';
 import { AuthResponse, JwtPayload } from './interfaces/jwt-payload.interface';
+import { EmailService } from '../common/services/email.service';
 
 @Injectable()
 export class AuthService {
@@ -21,6 +23,7 @@ export class AuthService {
     private userRepository: Repository<User>,
     private jwtService: JwtService,
     private configService: ConfigService,
+    private emailService: EmailService,
   ) {}
 
   async validateUser(identifier: string, password: string): Promise<User | null> {
@@ -210,6 +213,63 @@ export class AuthService {
     } catch (error) {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
+  }
+
+  async forgotPassword(dto: ForgotPasswordDto): Promise<{ message: string }> {
+    const user = await this.userRepository.findOne({ where: { email: dto.email } });
+    const silentSuccess = { message: 'If that email exists, a reset link has been sent.' };
+
+    if (!user || !user.isActive) return silentSuccess;
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const hashedToken = await bcrypt.hash(rawToken, 10);
+    const expiry = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
+
+    user.passwordResetToken = hashedToken;
+    user.passwordResetExpiry = expiry;
+    await this.userRepository.save(user);
+
+    const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
+    const resetLink = `${frontendUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
+
+    try {
+      await this.emailService.sendPasswordResetEmail({
+        email: user.email,
+        name: `${user.firstName} ${user.lastName}`,
+        resetLink,
+        expiryMinutes: 30,
+      });
+    } catch {
+      // Don't expose email errors to caller
+    }
+
+    return silentSuccess;
+  }
+
+  async resetPassword(dto: ResetPasswordDto): Promise<{ message: string }> {
+    const user = await this.userRepository.findOne({ where: { email: dto.email } });
+
+    if (!user || !user.passwordResetToken || !user.passwordResetExpiry) {
+      throw new BadRequestException('Invalid or expired reset token');
+    }
+
+    if (new Date() > user.passwordResetExpiry) {
+      throw new BadRequestException('Reset token has expired');
+    }
+
+    const isValid = await bcrypt.compare(dto.token, user.passwordResetToken);
+    if (!isValid) {
+      throw new BadRequestException('Invalid or expired reset token');
+    }
+
+    user.password = await bcrypt.hash(dto.newPassword, 10);
+    user.isPasswordChanged = true;
+    user.passwordResetToken = null as any;
+    user.passwordResetExpiry = null as any;
+
+    await this.userRepository.save(user);
+
+    return { message: 'Password reset successful. You may now log in.' };
   }
 
   async getProfile(userId: string): Promise<Omit<User, 'password'>> {

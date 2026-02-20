@@ -411,4 +411,33 @@ export class EmailService {
       requestId,
     });
   }
+
+  /**
+   * [TO EMPLOYEE] Sent when a password reset is requested.
+   */
+  async sendPasswordResetEmail(opts: {
+    email: string;
+    name: string;
+    resetLink: string;
+    expiryMinutes: number;
+  }): Promise<void> {
+    const { email, name, resetLink, expiryMinutes } = opts;
+
+    const content = `
+      <p style="margin:0 0 20px;">Hello <strong>${name}</strong>,</p>
+      <p style="margin:0 0 20px;color:${BRAND.textDark};">We received a request to reset your password for your Great Deals Academy account. Click the button below to set a new password.</p>
+
+      <p style="margin:0 0 20px;">${this.button('Reset My Password', resetLink, BRAND.navy)}</p>
+
+      <p style="margin:0 0 12px;color:${BRAND.textMuted};font-size:13px;">This link will expire in <strong>${expiryMinutes} minutes</strong>. If you did not request a password reset, you can safely ignore this email — your password will not be changed.</p>
+      <p style="margin:0;color:${BRAND.textMuted};font-size:13px;">If you need help, please reach out to HR.</p>
+    `;
+
+    await this.sendEmail({
+      to: email,
+      subject: 'Reset Your Great Deals Academy Password',
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hello ${name},\n\nWe received a request to reset your password.\n\nReset your password here:\n${resetLink}\n\nThis link expires in ${expiryMinutes} minutes.\n\nIf you did not request this, ignore this email.\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
 }

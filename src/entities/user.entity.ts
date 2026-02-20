@@ -99,6 +99,12 @@ export class User {
   @Column({ default: false })
   isPasswordChanged: boolean;
 
+  @Column({ nullable: true, length: 255 })
+  passwordResetToken: string;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  passwordResetExpiry: Date;
+
   @CreateDateColumn()
   createdAt: Date;
 
