@@ -320,31 +320,29 @@ export class EmailService {
       : optsOrEmail;
 
     const { employeeEmail, employeeName, optionName, tokenCost } = opts;
-    const tokenLine = tokenCost > 0
-      ? `<p style="margin:8px 0 0;color:${BRAND.textMuted};font-size:14px;"><strong>${tokenCost} token${tokenCost !== 1 ? 's' : ''}</strong> have been deducted from your balance.</p>`
-      : '';
 
     const content = `
-      <p style="margin:0 0 8px;">Hi <strong>${employeeName}</strong>,</p>
-      <p style="margin:0 0 20px;">Great news! Your Development Token request has been <strong style="color:${BRAND.green};">approved</strong>.</p>
+      <p style="margin:0 0 4px;">Hi <strong>${employeeName}</strong>,</p>
+      <p style="margin:0 0 20px;font-size:15px;"><strong>Good news!</strong><br>Your Development Token request has been approved.</p>
 
+      <p style="margin:0 0 8px;font-weight:600;color:${BRAND.textDark};">Request Summary:</p>
       <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 20px;">
         ${this.detailRow('Development Option:', optionName)}
-        ${tokenCost > 0 ? this.detailRow('Tokens Deducted:', `${tokenCost} token${tokenCost !== 1 ? 's' : ''}`) : ''}
-        ${this.detailRow('Approved On:', this.formatDate(new Date()))}
+        ${this.detailRow('Tokens Deducted:', `${tokenCost} token${tokenCost !== 1 ? 's' : ''}`)}
+        ${this.detailRow('Status:', `<span style="color:${BRAND.green};font-weight:600;">Approved</span>`)}
       </table>
 
-      ${tokenLine}
-      <p style="margin:8px 0 0;color:${BRAND.textMuted};font-size:14px;">You may now proceed with your development activity. Track your remaining balance anytime via the application.</p>
+      <p style="margin:0 0 12px;color:${BRAND.textDark};">You may now proceed with your development activity. Please remember to upload the required completion documents once finished.</p>
+      <p style="margin:0 0 20px;color:${BRAND.textDark};">If coaching sessions are included, scheduling details will be shared separately.</p>
 
       ${this.button('View My Requests', `${this.frontendUrl}/my-requests`, BRAND.green)}
     `;
 
     await this.sendEmail({
       to: employeeEmail,
-      subject: `Development Token Request Approved — ${optionName}`,
+      subject: 'Your Development Token Request Has Been Approved',
       htmlBody: this.buildTemplate(content),
-      textBody: `Hi ${employeeName},\n\nYour Development Token request for ${optionName} has been approved.\n${tokenCost > 0 ? `${tokenCost} token(s) have been deducted from your balance.\n` : ''}\nBest regards,\nGreat Deals Academy`,
+      textBody: `Hi ${employeeName},\n\nGood news!\nYour Development Token request has been approved.\n\nRequest Summary:\n- Development Option: ${optionName}\n- Tokens Deducted: ${tokenCost} token${tokenCost !== 1 ? 's' : ''}\n- Status: Approved\n\nYou may now proceed with your development activity. Please remember to upload the required completion documents once finished.\n\nIf coaching sessions are included, scheduling details will be shared separately.\n\nBest regards,\nGreat Deals Academy`,
     });
   }
 
