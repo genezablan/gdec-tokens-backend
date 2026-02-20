@@ -44,18 +44,19 @@ All endpoints require `Authorization: Bearer <token>` header.
 
 ### Shared (this guide)
 
-| Method  | Endpoint                              | Purpose                                                  | Auth Required                         |
-| ------- | ------------------------------------- | -------------------------------------------------------- | ------------------------------------- |
-| `GET`   | `/token-requests/my`                  | Employee's own request history                           | Any authenticated user                |
-| `GET`   | `/token-requests/pending`             | Combined approval queue (manager + HR items, role-aware) | `approver`, `hr_approver`, or `admin` |
-| `GET`   | `/token-requests`                     | All requests (filterable by status)                      | `admin`                               |
-| `GET`   | `/token-requests/:id`                 | Get a single request by UUID                             | Any authenticated user                |
-| `PATCH` | `/token-requests/:id/manager-approve` | Manager approves → `manager_approved`                    | `approver` or `admin`                 |
-| `PATCH` | `/token-requests/:id/manager-reject`  | Manager rejects → `rejected`                             | `approver` or `admin`                 |
-| `PATCH` | `/token-requests/:id/hr-approve`      | HR approves → `approved` + tokens deducted               | `hr_approver` or `admin`              |
-| `PATCH` | `/token-requests/:id/hr-reject`       | HR rejects → `rejected`                                  | `hr_approver` or `admin`              |
-| `PATCH` | `/token-requests/:id/resubmit`        | Employee updates and resubmits a rejected request        | Any authenticated user                |
-| `PATCH` | `/token-requests/:id/cancel`          | Employee cancels (pending only) → `cancelled`            | Any authenticated user                |
+| Method  | Endpoint                              | Purpose                                                   | Auth Required                         |
+| ------- | ------------------------------------- | --------------------------------------------------------- | ------------------------------------- |
+| `GET`   | `/token-requests/my`                  | Employee's own request history                            | Any authenticated user                |
+| `GET`   | `/token-requests/pending`             | Combined approval queue (manager + HR items, role-aware)  | `approver`, `hr_approver`, or `admin` |
+| `GET`   | `/token-requests`                     | All requests (filterable by status)                       | `admin`                               |
+| `GET`   | `/token-requests/:id`                 | Get a single request by UUID                              | Any authenticated user                |
+| `GET`   | `/token-requests/:id/attachment`      | Get a pre-signed download URL for the attachment (15 min) | Any authenticated user                |
+| `PATCH` | `/token-requests/:id/manager-approve` | Manager approves → `manager_approved`                     | `approver` or `admin`                 |
+| `PATCH` | `/token-requests/:id/manager-reject`  | Manager rejects → `rejected`                              | `approver` or `admin`                 |
+| `PATCH` | `/token-requests/:id/hr-approve`      | HR approves → `approved` + tokens deducted                | `hr_approver` or `admin`              |
+| `PATCH` | `/token-requests/:id/hr-reject`       | HR rejects → `rejected`                                   | `hr_approver` or `admin`              |
+| `PATCH` | `/token-requests/:id/resubmit`        | Employee updates and resubmits a rejected request         | Any authenticated user                |
+| `PATCH` | `/token-requests/:id/cancel`          | Employee cancels (pending only) → `cancelled`             | Any authenticated user                |
 
 ---
 
@@ -97,7 +98,7 @@ interface TokenRequest {
   rejectedAt: string | null;
   cancelledAt: string | null;
   formData: Record<string, unknown>; // type-specific — see individual type guides
-  attachmentUrl: string | null;
+  attachmentUrl: string | null; // stored S3 URL — do NOT link directly, bucket is private
   // ── Snapshot (captured at submission, never changes) ──
   snapshotDepartment: string;
   snapshotPosition: string;
@@ -283,6 +284,15 @@ curl "http://localhost:3000/api/token-requests?status=pending" \
   -H "Authorization: Bearer <ADMIN_TOKEN>"
 ```
 
+### 11. Get a pre-signed download URL for an attachment
+
+```bash
+curl http://localhost:3000/api/token-requests/<ID>/attachment \
+  -H "Authorization: Bearer <TOKEN>"
+# Response: { "url": "https://s3.amazonaws.com/...?X-Amz-Signature=...&X-Amz-Expires=900" }
+# Open the url in a new browser tab to download the file. Valid for 15 minutes.
+```
+
 ---
 
 ## 🎨 Frontend Requirements
@@ -371,7 +381,11 @@ Fetch `GET /token-requests/my`. Show a list/table where each row has:
 - Submitted date (`createdAt`)
 - **Cancel button** — visible only when `status === 'pending'`; calls `PATCH /:id/cancel`
 - **Resubmit button** — visible only when `status === 'rejected'`; opens type-specific edit modal
-- Row click → detail drawer showing `formData`, attachment link, snapshot info, rejection comment
+- Row click → detail drawer showing `formData`, snapshot info, rejection comment, and attachment link
+
+> **Attachment download:** If `attachmentUrl !== null`, show a **Download Attachment** button.
+> On click, call `GET /token-requests/:id/attachment` → returns `{ url }` → open `url` in a new tab.
+> **Do NOT link directly to `attachmentUrl`** — the S3 bucket is private and the raw URL will 403.
 
 ---
 

@@ -1,0 +1,86 @@
+import {
+  Controller,
+  Get,
+  Patch,
+  Param,
+  Query,
+  Body,
+  ParseUUIDPipe,
+  BadRequestException,
+} from '@nestjs/common';
+import { UsersService } from './users.service';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { UserRole } from '../common/enums';
+
+@Controller('users')
+export class UsersController {
+  constructor(private readonly usersService: UsersService) {}
+
+  /**
+   * GET /users
+   * List users with optional filters.
+   *
+   * ?role=coach|employee|approver|hr_approver|admin  → users who have that role
+   * ?isActive=true|false                             → filter by active status
+   *
+   * Common usages:
+   *   GET /users?role=coach&isActive=true  → list active coaches for coaching request form
+   *   GET /users                           → all users (admin)
+   *
+   * Auth: any authenticated user (for role=coach lookup); admin-only for full list
+   */
+  @Get()
+  findAll(
+    @Query('role') role?: string,
+    @Query('isActive') isActive?: string,
+  ) {
+    const roleEnum = role ? (role as UserRole) : undefined;
+    if (role && !Object.values(UserRole).includes(role as UserRole)) {
+      throw new BadRequestException(`Invalid role: ${role}`);
+    }
+
+    const activeFilter =
+      isActive === 'true' ? true : isActive === 'false' ? false : undefined;
+
+    return this.usersService.findAll(roleEnum, activeFilter);
+  }
+
+  /**
+   * GET /users/:id
+   * Get a single user by UUID.
+   * Auth: any authenticated user.
+   */
+  @Get(':id')
+  findOne(@Param('id', ParseUUIDPipe) id: string) {
+    return this.usersService.findOne(id);
+  }
+
+  /**
+   * PATCH /users/:id/roles
+   * Update the roles array for a user.
+   * Body: { roles: UserRole[] }
+   * Auth: admin only.
+   */
+  @Patch(':id/roles')
+  @Roles(UserRole.ADMIN)
+  updateRoles(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body('roles') roles: UserRole[],
+  ) {
+    if (!Array.isArray(roles) || roles.length === 0) {
+      throw new BadRequestException('roles must be a non-empty array');
+    }
+    return this.usersService.updateRoles(id, roles);
+  }
+
+  /**
+   * PATCH /users/:id/toggle-active
+   * Toggle isActive for a user (activate / deactivate).
+   * Auth: admin only.
+   */
+  @Patch(':id/toggle-active')
+  @Roles(UserRole.ADMIN)
+  toggleActive(@Param('id', ParseUUIDPipe) id: string) {
+    return this.usersService.toggleActive(id);
+  }
+}
