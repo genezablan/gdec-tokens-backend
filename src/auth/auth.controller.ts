@@ -5,16 +5,19 @@ import {
   UseGuards,
   Get,
   Req,
+  Res,
   HttpCode,
   HttpStatus,
   Patch,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { Response } from 'express';
 import { AuthService } from './auth.service';
-import { LoginDto, ChangePasswordDto, ForgotPasswordDto, ResetPasswordDto } from './dto';
+import { ChangePasswordDto, ForgotPasswordDto, ResetPasswordDto } from './dto';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 // import { GoogleAuthGuard } from './guards/google-auth.guard';
-// import { MicrosoftAuthGuard } from './guards/microsoft-auth.guard';
+import { MicrosoftAuthGuard } from './guards/microsoft-auth.guard';
 import { Public } from './decorators/public.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { User } from '../entities/user.entity';
@@ -23,6 +26,7 @@ import { User } from '../entities/user.entity';
 export class AuthController {
   constructor(
     private authService: AuthService,
+    private configService: ConfigService,
   ) {}
 
   @Public()
@@ -94,19 +98,18 @@ export class AuthController {
   }
   */
 
-  // Microsoft SSO — enable when Azure AD app is configured
-  /*
+  // Microsoft SSO
   @Public()
   @Get('microsoft')
   @UseGuards(MicrosoftAuthGuard)
   async microsoftAuth() {
-    // Initiates Microsoft OAuth flow
+    // Passport redirects to Microsoft login — no body needed
   }
 
   @Public()
   @Get('microsoft/callback')
   @UseGuards(MicrosoftAuthGuard)
-  async microsoftAuthCallback(@Req() req, @Res() res) {
+  async microsoftAuthCallback(@Req() req, @Res() res: Response) {
     const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
     try {
       const { providerId, email, firstName, lastName } = req.user;
@@ -117,13 +120,13 @@ export class AuthController {
         firstName,
         lastName,
       );
-      const { accessToken } = await this.authService.login(user);
-      return res.redirect(`${frontendUrl}/auth/callback?token=${accessToken}`);
+      const authResponse = await this.authService.login(user);
+      const token = authResponse.accessToken;
+      return res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
     } catch {
       return res.redirect(`${frontendUrl}/auth/error?message=Account+not+found.+Please+contact+HR.`);
     }
   }
-  */
 
   @Get('me')
   @UseGuards(JwtAuthGuard)

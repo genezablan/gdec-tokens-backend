@@ -10,7 +10,7 @@ import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { LocalStrategy } from './strategies/local.strategy';
 // import { GoogleStrategy } from './strategies/google.strategy';
-// import { MicrosoftStrategy } from './strategies/microsoft.strategy';
+import { MicrosoftStrategy } from './strategies/microsoft.strategy';
 
 @Module({
   imports: [
@@ -34,7 +34,7 @@ import { LocalStrategy } from './strategies/local.strategy';
     JwtStrategy,
     LocalStrategy,
     // GoogleStrategy,  // Enable when OAuth is configured
-    // MicrosoftStrategy,  // Enable when Microsoft SSO is configured
+    MicrosoftStrategy,
   ],
   exports: [AuthService, JwtModule, PassportModule],
 })
