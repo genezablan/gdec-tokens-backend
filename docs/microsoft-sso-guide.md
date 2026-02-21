@@ -17,6 +17,9 @@ This is a **redirect-based flow** — no PKCE or token exchange needed on the fr
 | `GET`  | `/auth/microsoft`          | Redirect browser here to initiate Microsoft SSO | No            |
 | `GET`  | `/auth/microsoft/callback` | Backend-only — handles Azure AD callback        | No (internal) |
 
+> **Backend base URL (CloudFront → EC2):** `https://d3oagholm1a2ta.cloudfront.net/api`
+> **Frontend URL:** `https://tokens-staging.greatdealscorp.com`
+
 > **Note:** `/auth/microsoft/callback` is called by Microsoft directly — never call it from frontend code.
 
 ---
@@ -56,6 +59,9 @@ This is a **redirect-based flow** — no PKCE or token exchange needed on the fr
        │
        └── ❌ No matching account → Redirect to frontend:
                  https://tokens-staging.greatdealscorp.com/auth/error?message=Account+not+found.+Please+contact+HR.
+
+> **Note:** The OAuth callback (`/api/auth/microsoft/callback`) goes to the **backend** (CloudFront → EC2),
+> not the frontend. The frontend only receives the final redirect after the backend completes the OAuth dance.
 ```
 
 ---
@@ -166,12 +172,13 @@ The JWT returned via the callback URL is identical to what `POST /auth/login` re
 
 ## 🌐 Redirect URLs by Environment
 
-| Environment   | Microsoft Auth URL                                             | Frontend Callback                                         |
-| ------------- | -------------------------------------------------------------- | --------------------------------------------------------- |
-| **Local dev** | `http://localhost:3000/api/auth/microsoft`                     | `http://localhost:5173/auth/callback`                     |
-| **Staging**   | `https://tokens-staging.greatdealscorp.com/api/auth/microsoft` | `https://tokens-staging.greatdealscorp.com/auth/callback` |
+| Environment   | Microsoft Auth URL (backend)                               | Azure AD Redirect URI (backend callback)                            | Frontend receives redirect at                             |
+| ------------- | ---------------------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------- |
+| **Local dev** | `http://localhost:3000/api/auth/microsoft`                 | `http://localhost:3000/api/auth/microsoft/callback`                 | `http://localhost:5173/auth/callback`                     |
+| **Staging**   | `https://d3oagholm1a2ta.cloudfront.net/api/auth/microsoft` | `https://d3oagholm1a2ta.cloudfront.net/api/auth/microsoft/callback` | `https://tokens-staging.greatdealscorp.com/auth/callback` |
 
-> The correct callback URL is configured via the `MICROSOFT_CALLBACK_URL` and `FRONTEND_URL` env vars on the backend. No frontend config needed.
+> The Azure AD **Redirect URI** must point to the **backend** (CloudFront URL), not the frontend.
+> The `MICROSOFT_CALLBACK_URL` env var on EC2 must be set to the backend CloudFront callback URL.
 
 ---
 
