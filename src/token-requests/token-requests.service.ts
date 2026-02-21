@@ -12,6 +12,8 @@ import { User } from '../entities/user.entity';
 import { DevelopmentOption } from '../entities/development-option.entity';
 import { TokenBalancesService } from '../token-balances/token-balances.service';
 import { EmailService } from '../common/services/email.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../entities/notification.entity';
 import { RequestStatus, UserRole, DevelopmentOptionType } from '../common/enums';
 import { CreateTaskOffloadingRequestDto } from './dto/create-task-offloading-request.dto';
 import { CreateCoachingRequestDto } from './dto/create-coaching-request.dto';
@@ -32,6 +34,7 @@ export class TokenRequestsService {
     private readonly optionRepo: Repository<DevelopmentOption>,
     private readonly tokenBalancesService: TokenBalancesService,
     private readonly emailService: EmailService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -144,6 +147,22 @@ export class TokenRequestsService {
     } catch (err: unknown) {
       this.logger.warn(`Failed to send submission confirmation: ${(err as Error).message}`);
     }
+
+    // ── In-app: submission confirmation to employee ──
+    this.notificationsService.create(employeeId, {
+      title: 'Request Submitted',
+      message: `Your ${optionType.replace(/_/g, ' ')} request has been submitted and is awaiting approval.`,
+      type: NotificationType.INFO,
+      requestId: request.id,
+    }).catch(() => {});
+
+    // ── In-app: notify manager/coach ──
+    this.notificationsService.create(managerId, {
+      title: 'New Request Pending Your Approval',
+      message: `${employee.firstName} ${employee.lastName} submitted a ${optionType.replace(/_/g, ' ')} request.`,
+      type: NotificationType.INFO,
+      requestId: request.id,
+    }).catch(() => {});
 
     // ── Notify manager/coach: review required ──
     try {
@@ -340,15 +359,16 @@ export class TokenRequestsService {
     this.logger.log(`Request ${requestId} manager-approved by ${approverId}`);
 
     // ── Resolve HR and notify ──
-    const hrUser = await this.userRepo
+    const hrUsers = await this.userRepo
       .createQueryBuilder('user')
       .where(':role = ANY(user.roles)', { role: UserRole.HR_APPROVER })
       .andWhere('user.isActive = true')
-      .getOne();
+      .getMany();
 
-    if (hrUser) {
+    const firstApprover = await this.userRepo.findOne({ where: { id: request.managerId } });
+
+    for (const hrUser of hrUsers) {
       try {
-        const firstApprover = await this.userRepo.findOne({ where: { id: request.managerId } });
         await this.emailService.sendHrReviewNotification({
           hrEmail: hrUser.email,
           hrName: `${hrUser.firstName} ${hrUser.lastName}`,
@@ -364,7 +384,23 @@ export class TokenRequestsService {
       } catch (err: unknown) {
         this.logger.warn(`Failed to send HR notification: ${(err as Error).message}`);
       }
+
+      // ── In-app: notify HR ──
+      this.notificationsService.create(hrUser.id, {
+        title: 'Request Pending HR Approval',
+        message: `${request.employee.firstName} ${request.employee.lastName}'s ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been approved by the ${request.type === DevelopmentOptionType.COACHING ? 'coach' : 'manager'} and needs your review.`,
+        type: NotificationType.INFO,
+        requestId: request.id,
+      }).catch(() => {});
     }
+
+    // ── In-app: notify employee that manager approved ──
+    this.notificationsService.create(request.employeeId, {
+      title: 'Request Approved by Manager',
+      message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been approved by your ${request.type === DevelopmentOptionType.COACHING ? 'coach' : 'manager'} and is now pending HR review.`,
+      type: NotificationType.INFO,
+      requestId: request.id,
+    }).catch(() => {});
 
     return this.findRequest(requestId);
   }
@@ -400,6 +436,14 @@ export class TokenRequestsService {
     } catch (err: unknown) {
       this.logger.warn(`Failed to send approval email: ${(err as Error).message}`);
     }
+
+    // ── In-app: notify employee final approval ──
+    this.notificationsService.create(request.employeeId, {
+      title: 'Request Approved! 🎉',
+      message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been fully approved. ${request.tokenCost} token${request.tokenCost !== 1 ? 's' : ''} have been deducted.`,
+      type: NotificationType.SUCCESS,
+      requestId: request.id,
+    }).catch(() => {});
 
     return this.findRequest(requestId);
   }
@@ -448,6 +492,14 @@ export class TokenRequestsService {
     } catch (err: unknown) {
       this.logger.warn(`Failed to send rejection email: ${(err as Error).message}`);
     }
+
+    // ── In-app: notify employee rejection ──
+    this.notificationsService.create(request.employeeId, {
+      title: 'Request Not Approved',
+      message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request was not approved. Reason: ${dto.comment}`,
+      type: NotificationType.ERROR,
+      requestId: request.id,
+    }).catch(() => {});
 
     return this.findRequest(requestId);
   }
