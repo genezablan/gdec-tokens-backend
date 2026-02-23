@@ -1,14 +1,16 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ArrayContains, Repository } from 'typeorm';
 import { User } from '../entities/user.entity';
 import { UserRole } from '../common/enums';
+import { EmailService } from '../common/services/email.service';
 
 @Injectable()
 export class UsersService {
   constructor(
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
+    private readonly emailService: EmailService,
   ) {}
 
   private safeUser(user: User) {
@@ -43,7 +45,7 @@ export class UsersService {
    * - ?isActive=true|false                              → filter by active status (default: all)
    * Sorted by lastName asc.
    */
-  async findAll(role?: UserRole, isActive?: boolean) {
+  async findAll(role?: UserRole, isActive?: boolean, isPendingApproval?: boolean) {
     const where: Record<string, unknown> = {};
 
     if (role) {
@@ -52,6 +54,10 @@ export class UsersService {
 
     if (isActive !== undefined) {
       where.isActive = isActive;
+    }
+
+    if (isPendingApproval !== undefined) {
+      where.isPendingApproval = isPendingApproval;
     }
 
     const users = await this.userRepo.find({
@@ -81,6 +87,45 @@ export class UsersService {
     if (!user) throw new NotFoundException(`User ${id} not found`);
     user.isActive = !user.isActive;
     await this.userRepo.save(user);
+    return this.safeUser(user);
+  }
+
+  async approvePendingRegistration(id: string) {
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException(`User ${id} not found`);
+    if (!user.isPendingApproval) {
+      throw new BadRequestException('This account is not pending approval');
+    }
+
+    user.isPendingApproval = false;
+    user.isActive = true;
+    await this.userRepo.save(user);
+
+    this.emailService.sendRegistrationApprovedEmail({
+      email: user.email,
+      name: user.fullName,
+    }).catch(() => {});
+
+    return this.safeUser(user);
+  }
+
+  async rejectPendingRegistration(id: string, reason?: string) {
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException(`User ${id} not found`);
+    if (!user.isPendingApproval) {
+      throw new BadRequestException('This account is not pending approval');
+    }
+
+    user.isPendingApproval = false;
+    user.isActive = false;
+    await this.userRepo.save(user);
+
+    this.emailService.sendRegistrationRejectedEmail({
+      email: user.email,
+      name: user.fullName,
+      reason,
+    }).catch(() => {});
+
     return this.safeUser(user);
   }
 }

@@ -636,4 +636,59 @@ export class EmailService {
       + ' · '
       + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
   }
+
+  // ─── Registration Notifications ────────────────────────────────────────────
+
+  /**
+   * [TO EMPLOYEE] Sent when HR approves their registration.
+   */
+  async sendRegistrationApprovedEmail(opts: {
+    email: string;
+    name: string;
+  }): Promise<void> {
+    const { email, name } = opts;
+    const loginUrl = `${this.frontendUrl}/login`;
+
+    const content = `
+      <p style="margin:0 0 20px;">Hello <strong>${name}</strong>,</p>
+      <p style="margin:0 0 20px;color:${BRAND.textDark};">Great news! Your Great Deals Academy account has been <strong style="color:${BRAND.green};">approved by HR</strong>. You can now log in using the credentials you registered with.</p>
+      <p style="margin:0 0 20px;">${this.button('Log In Now', loginUrl, BRAND.green)}</p>
+      <p style="margin:0;color:${BRAND.textMuted};font-size:13px;">If you have any questions, please contact HR.</p>
+    `;
+
+    await this.sendEmail({
+      to: email,
+      subject: 'Your Account Has Been Approved — Great Deals Academy',
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hello ${name},\n\nYour Great Deals Academy account has been approved by HR. You can now log in at:\n${loginUrl}\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /**
+   * [TO EMPLOYEE] Sent when HR rejects their registration.
+   */
+  async sendRegistrationRejectedEmail(opts: {
+    email: string;
+    name: string;
+    reason?: string;
+  }): Promise<void> {
+    const { email, name, reason } = opts;
+    const reasonRow = reason
+      ? `<p style="margin:0 0 20px;"><strong>Reason:</strong> ${reason}</p>`
+      : '';
+
+    const content = `
+      <p style="margin:0 0 20px;">Hello <strong>${name}</strong>,</p>
+      <p style="margin:0 0 20px;color:${BRAND.textDark};">Unfortunately, your registration for a Great Deals Academy account has not been approved at this time.</p>
+      ${reasonRow}
+      <p style="margin:0;color:${BRAND.textMuted};font-size:13px;">If you believe this is a mistake or need assistance, please reach out to HR directly.</p>
+    `;
+
+    await this.sendEmail({
+      to: email,
+      subject: 'Your Account Registration Was Not Approved — Great Deals Academy',
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hello ${name},\n\nYour registration has not been approved.${reason ? '\n\nReason: ' + reason : ''}\n\nPlease contact HR for assistance.\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
 }

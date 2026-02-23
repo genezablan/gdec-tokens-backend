@@ -47,21 +47,23 @@ export class User {
   @Column({
     type: 'enum',
     enum: Gender,
+    nullable: true,
   })
-  gender: Gender;
+  gender: Gender | null;
 
   @Column({ length: 100 })
   department: string;
 
-  @Column({ length: 50 })
-  location: string;
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  location: string | null;
 
-  @Column({ length: 100 })
-  position: string;
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  position: string | null;
 
   @Column({
     type: 'enum',
     enum: EmployeeType,
+    default: EmployeeType.RANK_AND_FILE,
   })
   employeeType: EmployeeType;
 
@@ -98,6 +100,9 @@ export class User {
 
   @Column({ default: false })
   isPasswordChanged: boolean;
+
+  @Column({ default: false })
+  isPendingApproval: boolean;
 
   @Column({ nullable: true, length: 255 })
   passwordResetToken: string;

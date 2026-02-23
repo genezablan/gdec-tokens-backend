@@ -9,11 +9,12 @@ import {
   HttpCode,
   HttpStatus,
   Patch,
+  Query,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
-import { ChangePasswordDto, ForgotPasswordDto, ResetPasswordDto } from './dto';
+import { ChangePasswordDto, ForgotPasswordDto, RegisterDto, ResetPasswordDto } from './dto';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 // import { GoogleAuthGuard } from './guards/google-auth.guard';
@@ -28,6 +29,25 @@ export class AuthController {
     private authService: AuthService,
     private configService: ConfigService,
   ) {}
+
+  @Public()
+  @Post('register')
+  @HttpCode(HttpStatus.CREATED)
+  async register(@Body() dto: RegisterDto) {
+    return this.authService.register(dto);
+  }
+
+  @Public()
+  @Get('departments')
+  getDepartments() {
+    return this.authService.getDepartments();
+  }
+
+  @Public()
+  @Get('supervisors')
+  getSupervisorsByDepartment(@Query('department') department: string) {
+    return this.authService.getSupervisorsByDepartment(department ?? '');
+  }
 
   @Public()
   @UseGuards(LocalAuthGuard)

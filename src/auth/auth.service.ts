@@ -11,8 +11,8 @@ import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { User } from '../entities/user.entity';
-import { AuthProvider } from '../common/enums';
-import { ChangePasswordDto, ForgotPasswordDto, ResetPasswordDto } from './dto';
+import { AuthProvider, EmployeeStatus, UserRole } from '../common/enums';
+import { ChangePasswordDto, ForgotPasswordDto, RegisterDto, ResetPasswordDto } from './dto';
 import { AuthResponse, JwtPayload } from './interfaces/jwt-payload.interface';
 import { EmailService } from '../common/services/email.service';
 
@@ -34,6 +34,11 @@ export class AuthService {
 
     if (!user) {
       return null;
+    }
+
+    // Check if account is pending HR approval
+    if (user.isPendingApproval) {
+      throw new UnauthorizedException('Your account is pending HR approval. You will be notified by email once approved.');
     }
 
     // Check if user is active
@@ -213,6 +218,75 @@ export class AuthService {
     } catch (error) {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
+  }
+
+  async getDepartments(): Promise<string[]> {
+    const rows = await this.userRepository
+      .createQueryBuilder('user')
+      .select('DISTINCT user.department', 'department')
+      .where('user.isActive = :isActive', { isActive: true })
+      .orderBy('user.department', 'ASC')
+      .getRawMany<{ department: string }>();
+
+    return rows.map((r) => r.department);
+  }
+
+  async getSupervisorsByDepartment(department: string) {
+    const users = await this.userRepository
+      .createQueryBuilder('user')
+      .where('user.department = :department', { department })
+      .andWhere('user.isActive = :isActive', { isActive: true })
+      .andWhere(':role = ANY(user.roles)', { role: 'approver' })
+      .orderBy('user.lastName', 'ASC')
+      .addOrderBy('user.firstName', 'ASC')
+      .getMany();
+
+    return users.map((u) => ({
+      id: u.id,
+      fullName: u.fullName,
+      position: u.position,
+    }));
+  }
+
+  async register(dto: RegisterDto): Promise<{ message: string }> {
+    const existing = await this.userRepository.findOne({ where: { email: dto.email } });
+    if (existing) {
+      throw new BadRequestException('An account with this email already exists');
+    }
+
+    // Verify the supervisor exists
+    const supervisor = await this.userRepository.findOne({
+      where: { id: dto.immediateSupervisorId },
+    });
+    if (!supervisor) {
+      throw new BadRequestException('The selected supervisor does not exist');
+    }
+
+    // Auto-generate employeeId: count all users and pad to 3 digits
+    const count = await this.userRepository.count();
+    const employeeId = `GDC-${String(count + 1).padStart(3, '0')}`;
+
+    const hashedPassword = await bcrypt.hash(dto.password, 10);
+
+    const user = this.userRepository.create({
+      employeeId,
+      email: dto.email,
+      password: hashedPassword,
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+      department: dto.department,
+      immediateSupervisorId: dto.immediateSupervisorId,
+      contact: dto.contact,
+      roles: [UserRole.EMPLOYEE],
+      employeeStatus: EmployeeStatus.PROBATIONARY,
+      isActive: false,          // Cannot log in until HR approves
+      isPendingApproval: true,  // Flags account for HR review
+      isPasswordChanged: true,  // They set their own password at registration
+    });
+
+    await this.userRepository.save(user);
+
+    return { message: 'Registration submitted. Your account is pending HR approval. You will receive an email once your account is approved.' };
   }
 
   async forgotPassword(dto: ForgotPasswordDto): Promise<{ message: string }> {

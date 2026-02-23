@@ -115,11 +115,11 @@ export class CoachingSessionsService {
       throw new ForbiddenException('Only the employee or assigned coach can book sessions');
     }
 
-    // Count active sessions (exclude cancelled and declined so numbering stays correct)
+    // Count active sessions (exclude cancelled, declined, and no-show so the slot can be rebooked)
     const bookedCount = await this.sessionRepo.count({
       where: {
         tokenRequestId: requestId,
-        status: Not(In([CoachingSessionStatus.CANCELLED, CoachingSessionStatus.DECLINED])),
+        status: Not(In([CoachingSessionStatus.CANCELLED, CoachingSessionStatus.DECLINED, CoachingSessionStatus.NO_SHOW])),
       },
     });
 

@@ -57,3 +57,34 @@ export class OAuthCallbackDto {
   @IsString()
   provider: 'microsoft' | 'google';
 }
+
+export class RegisterDto {
+  @IsNotEmpty()
+  @IsString()
+  firstName: string;
+
+  @IsNotEmpty()
+  @IsString()
+  lastName: string;
+
+  @IsNotEmpty()
+  @IsString()
+  department: string;
+
+  @IsNotEmpty()
+  @IsString()
+  immediateSupervisorId: string; // UUID of the reporting-to supervisor
+
+  @IsNotEmpty()
+  @IsString()
+  contact: string; // Phone number
+
+  @IsNotEmpty()
+  @IsEmail()
+  email: string;
+
+  @IsNotEmpty()
+  @IsString()
+  @MinLength(8)
+  password: string;
+}

@@ -83,8 +83,8 @@ export class TokenRequest {
   @Column({ length: 100, nullable: true })
   snapshotDepartment: string;
 
-  @Column({ length: 100, nullable: true })
-  snapshotPosition: string;
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  snapshotPosition: string | null;
 
   @Column({ length: 101, nullable: true })
   snapshotManagerName: string; // "First Last" of manager at submission time

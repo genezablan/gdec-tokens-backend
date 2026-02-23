@@ -21,7 +21,7 @@ export interface AuthResponse {
     firstName: string;
     lastName: string;
     department: string;
-    position: string;
+    position: string | null;
     roles: UserRole[];
     isPasswordChanged: boolean;
   };

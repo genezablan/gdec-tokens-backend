@@ -46,6 +46,18 @@ export class UsersController {
   }
 
   /**
+   * GET /users/pending-registrations
+   * List all accounts with isPendingApproval = true.
+   * Auth: hr_approver or admin.
+   * NOTE: Must be declared BEFORE GET :id to avoid route conflict.
+   */
+  @Get('pending-registrations')
+  @Roles(UserRole.HR_APPROVER, UserRole.ADMIN)
+  getPendingRegistrations() {
+    return this.usersService.findAll(undefined, undefined, true);
+  }
+
+  /**
    * GET /users/:id
    * Get a single user by UUID.
    * Auth: any authenticated user.
@@ -82,5 +94,31 @@ export class UsersController {
   @Roles(UserRole.ADMIN)
   toggleActive(@Param('id', ParseUUIDPipe) id: string) {
     return this.usersService.toggleActive(id);
+  }
+
+  /**
+   * PATCH /users/:id/approve-registration
+   * HR approves a pending registration → isActive = true.
+   * Auth: hr_approver or admin.
+   */
+  @Patch(':id/approve-registration')
+  @Roles(UserRole.HR_APPROVER, UserRole.ADMIN)
+  approveRegistration(@Param('id', ParseUUIDPipe) id: string) {
+    return this.usersService.approvePendingRegistration(id);
+  }
+
+  /**
+   * PATCH /users/:id/reject-registration
+   * HR rejects a pending registration — account stays inactive.
+   * Body: { reason?: string }
+   * Auth: hr_approver or admin.
+   */
+  @Patch(':id/reject-registration')
+  @Roles(UserRole.HR_APPROVER, UserRole.ADMIN)
+  rejectRegistration(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body('reason') reason?: string,
+  ) {
+    return this.usersService.rejectPendingRegistration(id, reason);
   }
 }
