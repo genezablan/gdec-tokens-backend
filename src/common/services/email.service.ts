@@ -440,4 +440,200 @@ export class EmailService {
       textBody: `Hello ${name},\n\nWe received a request to reset your password.\n\nReset your password here:\n${resetLink}\n\nThis link expires in ${expiryMinutes} minutes.\n\nIf you did not request this, ignore this email.\n\nBest regards,\nGreat Deals Academy`,
     });
   }
+
+  // ─── Coaching Session Notifications ────────────────────────────────────────
+
+  /**
+   * [TO COACH] Sent when an employee books a session — awaiting coach confirmation.
+   */
+  async sendSessionBookingRequestNotification(opts: {
+    coachEmail: string;
+    coachName: string;
+    employeeName: string;
+    sessionNumber: number;
+    scheduledAt: Date;
+  }): Promise<void> {
+    const { coachEmail, coachName, employeeName, sessionNumber, scheduledAt } = opts;
+    const dateStr = this.formatDateTime(scheduledAt);
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${coachName}</strong>,</p>
+      <p style="margin:0 0 20px;"><strong>${employeeName}</strong> has requested to book a coaching session with you. Please review and confirm or decline.</p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 24px;">
+        ${this.detailRow('Employee:', employeeName)}
+        ${this.detailRow('Session:', `Session ${sessionNumber} of 3`)}
+        ${this.detailRow('Requested Date & Time:', dateStr)}
+      </table>
+
+      <p style="margin:0 0 20px;color:${BRAND.textMuted};font-size:14px;">Log in to the application to confirm or decline this session request.</p>
+      ${this.button('Go to My Sessions', `${this.frontendUrl}/coach/sessions`, BRAND.navy)}
+    `;
+
+    await this.sendEmail({
+      to: coachEmail,
+      subject: `Session Booking Request — ${employeeName} (Session ${sessionNumber})`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${coachName},\n\n${employeeName} has requested to book Session ${sessionNumber} of 3 with you.\n\nDate & Time: ${dateStr}\n\nPlease log in to confirm or decline.\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /**
+   * [TO EMPLOYEE] Sent when the coach confirms a session booking.
+   */
+  async sendSessionConfirmedNotification(opts: {
+    employeeEmail: string;
+    employeeName: string;
+    coachName: string;
+    sessionNumber: number;
+    scheduledAt: Date;
+  }): Promise<void> {
+    const { employeeEmail, employeeName, coachName, sessionNumber, scheduledAt } = opts;
+    const dateStr = this.formatDateTime(scheduledAt);
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${employeeName}</strong>,</p>
+      <p style="margin:0 0 20px;">Great news! Your coaching session has been <strong style="color:${BRAND.green};">confirmed</strong> by your coach.</p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 24px;">
+        ${this.detailRow('Coach:', coachName)}
+        ${this.detailRow('Session:', `Session ${sessionNumber} of 3`)}
+        ${this.detailRow('Date & Time:', dateStr)}
+        ${this.detailRow('Status:', `<span style="color:${BRAND.green};font-weight:600;">Confirmed</span>`)}
+      </table>
+
+      <p style="margin:0;color:${BRAND.textMuted};font-size:14px;">Please make sure to attend on time. You may view your session details in the application.</p>
+      ${this.button('View My Sessions', `${this.frontendUrl}/my-requests`, BRAND.green)}
+    `;
+
+    await this.sendEmail({
+      to: employeeEmail,
+      subject: `Coaching Session Confirmed — Session ${sessionNumber}`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${employeeName},\n\nYour coaching session has been confirmed.\n\nCoach: ${coachName}\nSession: Session ${sessionNumber} of 3\nDate & Time: ${dateStr}\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /**
+   * [TO EMPLOYEE] Sent when the coach declines a session booking.
+   */
+  async sendSessionDeclinedNotification(opts: {
+    employeeEmail: string;
+    employeeName: string;
+    coachName: string;
+    sessionNumber: number;
+    scheduledAt: Date;
+  }): Promise<void> {
+    const { employeeEmail, employeeName, coachName, sessionNumber, scheduledAt } = opts;
+    const dateStr = this.formatDateTime(scheduledAt);
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${employeeName}</strong>,</p>
+      <p style="margin:0 0 20px;">Unfortunately, your coach has <strong style="color:${BRAND.red};">declined</strong> your session booking request. Please select a different available slot and try again.</p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 24px;">
+        ${this.detailRow('Coach:', coachName)}
+        ${this.detailRow('Session:', `Session ${sessionNumber} of 3`)}
+        ${this.detailRow('Requested Time:', dateStr)}
+        ${this.detailRow('Status:', `<span style="color:${BRAND.red};font-weight:600;">Declined</span>`)}
+      </table>
+
+      <p style="margin:0;color:${BRAND.textMuted};font-size:14px;">The slot has been released — you can now choose another available time from your coach's schedule.</p>
+      ${this.button('Book a New Slot', `${this.frontendUrl}/my-requests`, BRAND.gold)}
+    `;
+
+    await this.sendEmail({
+      to: employeeEmail,
+      subject: `Coaching Session Declined — Please Rebook (Session ${sessionNumber})`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${employeeName},\n\nYour coach (${coachName}) has declined your Session ${sessionNumber} booking for ${dateStr}.\n\nThe slot has been released. Please log in to select another available slot.\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /**
+   * [TO EMPLOYEE] Sent when the coach marks a session as completed.
+   */
+  async sendSessionCompletedNotification(opts: {
+    employeeEmail: string;
+    employeeName: string;
+    coachName: string;
+    sessionNumber: number;
+    scheduledAt: Date;
+    sessionNotes?: string | null;
+  }): Promise<void> {
+    const { employeeEmail, employeeName, coachName, sessionNumber, scheduledAt, sessionNotes } = opts;
+    const dateStr = this.formatDateTime(scheduledAt);
+
+    const notesRow = sessionNotes
+      ? `<p style="margin:0 0 8px;font-weight:600;color:${BRAND.textDark};">Coach Notes:</p>
+         <div style="background:${BRAND.body};border-left:4px solid ${BRAND.green};padding:12px 16px;margin:0 0 20px;border-radius:0 4px 4px 0;color:${BRAND.textDark};">${sessionNotes}</div>`
+      : '';
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${employeeName}</strong>,</p>
+      <p style="margin:0 0 20px;">Your coach has marked Session ${sessionNumber} as <strong style="color:${BRAND.green};">completed</strong>.</p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 24px;">
+        ${this.detailRow('Coach:', coachName)}
+        ${this.detailRow('Session:', `Session ${sessionNumber} of 3`)}
+        ${this.detailRow('Date:', dateStr)}
+      </table>
+
+      ${notesRow}
+
+      <p style="margin:0;color:${BRAND.textMuted};font-size:14px;">Keep up the great work! Check the application to see your overall progress.</p>
+      ${this.button('View My Sessions', `${this.frontendUrl}/my-requests`, BRAND.green)}
+    `;
+
+    const notesSection = sessionNotes ? `\n\nCoach Notes:\n${sessionNotes}` : '';
+    await this.sendEmail({
+      to: employeeEmail,
+      subject: `Session ${sessionNumber} Completed — Great Job!`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${employeeName},\n\nYour coach has marked Session ${sessionNumber} of 3 as completed.\n\nCoach: ${coachName}\nDate: ${dateStr}${notesSection}\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /**
+   * [TO EMPLOYEE] Sent when the coach marks the employee as a no-show.
+   */
+  async sendSessionNoShowNotification(opts: {
+    employeeEmail: string;
+    employeeName: string;
+    coachName: string;
+    sessionNumber: number;
+    scheduledAt: Date;
+  }): Promise<void> {
+    const { employeeEmail, employeeName, coachName, sessionNumber, scheduledAt } = opts;
+    const dateStr = this.formatDateTime(scheduledAt);
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${employeeName}</strong>,</p>
+      <p style="margin:0 0 20px;">Your coach has recorded a <strong style="color:${BRAND.red};">no-show</strong> for your scheduled coaching session. The slot has been released so you can reschedule.</p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 24px;">
+        ${this.detailRow('Coach:', coachName)}
+        ${this.detailRow('Session:', `Session ${sessionNumber} of 3`)}
+        ${this.detailRow('Scheduled Time:', dateStr)}
+        ${this.detailRow('Status:', `<span style="color:${BRAND.red};font-weight:600;">No-show</span>`)}
+      </table>
+
+      <p style="margin:0;color:${BRAND.textMuted};font-size:14px;">Please book a new slot to complete this session. If you believe this is an error, contact your coach or HR.</p>
+      ${this.button('Reschedule Session', `${this.frontendUrl}/my-requests`, BRAND.gold)}
+    `;
+
+    await this.sendEmail({
+      to: employeeEmail,
+      subject: `Coaching Session No-Show Recorded — Session ${sessionNumber}`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${employeeName},\n\nA no-show has been recorded for your coaching Session ${sessionNumber} (${dateStr}) with ${coachName}.\n\nThe slot has been released. Please log in to reschedule.\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /** Formats a Date as "February 20, 2026 · 9:00 AM". */
+  private formatDateTime(d: Date): string {
+    return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+      + ' · '
+      + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  }
 }

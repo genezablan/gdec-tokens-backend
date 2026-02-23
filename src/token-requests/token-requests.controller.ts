@@ -107,6 +107,17 @@ export class TokenRequestsController {
   }
 
   /**
+   * GET /token-requests/coaching/my-overview
+   * Coach: get all coaching requests assigned to them (pending/manager_approved/approved),
+   * each with their sessions embedded. Used to power the "My Sessions" page.
+   */
+  @Get('coaching/my-overview')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  getCoachOverview(@CurrentUser() user: User) {
+    return this.coachingSessionsService.findCoachOverview(user.id);
+  }
+
+  /**
    * GET /token-requests/hr-queue
    * @deprecated Use GET /token-requests/pending instead.
    */
@@ -269,6 +280,34 @@ export class TokenRequestsController {
     @Body() dto: BookSessionDto,
   ) {
     return this.coachingSessionsService.bookSession(id, user.id, dto);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/confirm
+   * Coach confirms a pending booking request → status becomes scheduled.
+   */
+  @Patch(':id/sessions/:sessionId/confirm')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  confirmSession(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.coachingSessionsService.confirmSession(id, sessionId, user.id);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/decline
+   * Coach declines a pending booking request. Releases the availability slot.
+   */
+  @Patch(':id/sessions/:sessionId/decline')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  declineSession(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.coachingSessionsService.declineSession(id, sessionId, user.id);
   }
 
   /**
