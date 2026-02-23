@@ -696,6 +696,103 @@ export class TokenRequestsService {
     return results;
   }
 
+  /**
+   * Manager: full history of all requests they have been assigned to,
+   * regardless of current status. Optional tab filter:
+   *   tab=pending   → status = pending (still awaiting their action)
+   *   tab=approved  → manager_approved + approved (they already approved)
+   *   tab=rejected  → rejected + cancelled
+   */
+  /**
+   * Unified approval history for all approver roles.
+   *
+   * Role behaviour:
+   *   admin       → all requests, tab maps to broad status groups
+   *   approver    → requests where managerId = user.id (their direct queue)
+   *   coach       → coaching requests where managerId = user.id
+   *   hr_approver → all manager_approved (pending their action)
+   *                 + requests where hrId = user.id (they approved)
+   *                 + requests they rejected at HR level
+   *   multi-role  → union of applicable sets, deduplicated
+   *
+   * Tab filter (meaning varies by role — see inline comments):
+   *   pending  → approver/coach: status=pending | hr: status=manager_approved | admin: pending+manager_approved
+   *   approved → approver/coach: manager_approved+approved | hr: approved they acted on | admin: approved
+   *   rejected → approver/coach: rejected+cancelled | hr: rejected they acted on | admin: rejected+cancelled
+   */
+  async findApprovalHistory(user: User, tab?: string): Promise<TokenRequest[]> {
+    const roles = user.roles as string[];
+    const isAdmin   = roles.includes(UserRole.ADMIN as string);
+    const isHr      = roles.includes('hr_approver');
+    const isManager = roles.includes(UserRole.APPROVER as string);
+    const isCoach   = roles.includes(UserRole.COACH as string);
+
+    // ── Admin: full table, broad tab groups ────────────────────────────────
+    if (isAdmin) {
+      const adminStatusMap: Record<string, object> = {
+        pending:  { status: In([RequestStatus.PENDING, RequestStatus.MANAGER_APPROVED as RequestStatus]) },
+        approved: { status: RequestStatus.APPROVED },
+        rejected: { status: In([RequestStatus.REJECTED, RequestStatus.CANCELLED]) },
+      };
+      return this.requestRepo.find({
+        where: tab && adminStatusMap[tab] ? adminStatusMap[tab] : {},
+        relations: ['employee', 'manager', 'developmentOption'],
+        order: { createdAt: 'DESC' },
+      });
+    }
+
+    const whereConditions: object[] = [];
+
+    // ── Manager / Coach: requests assigned to them ─────────────────────────
+    // Both roles store the user as managerId, so one condition covers both.
+    if (isManager || isCoach) {
+      const managerTabMap: Record<string, object> = {
+        pending:  { status: RequestStatus.PENDING },
+        approved: { status: In([RequestStatus.MANAGER_APPROVED as RequestStatus, RequestStatus.APPROVED]) },
+        rejected: { status: In([RequestStatus.REJECTED, RequestStatus.CANCELLED]) },
+      };
+      const statusClause = tab && managerTabMap[tab] ? managerTabMap[tab] : {};
+      whereConditions.push({ managerId: user.id, ...statusClause });
+    }
+
+    // ── HR Approver: requests they need to act on / have acted on ──────────
+    if (isHr) {
+      if (!tab) {
+        // No filter: everything in HR scope
+        whereConditions.push(
+          { status: RequestStatus.MANAGER_APPROVED as RequestStatus },   // awaiting their action
+          { hrId: user.id },                                              // they approved
+          { rejectedById: user.id, rejectedByLevel: 'hr' },              // they rejected
+        );
+      } else if (tab === 'pending') {
+        // "Pending" for HR = requests awaiting their final review (company-wide)
+        whereConditions.push({ status: RequestStatus.MANAGER_APPROVED as RequestStatus });
+      } else if (tab === 'approved') {
+        // Requests they personally approved
+        whereConditions.push({ status: RequestStatus.APPROVED, hrId: user.id });
+      } else if (tab === 'rejected') {
+        // Requests they personally rejected
+        whereConditions.push({ rejectedById: user.id, rejectedByLevel: 'hr' });
+      }
+    }
+
+    if (whereConditions.length === 0) return [];
+
+    const results = await this.requestRepo.find({
+      where: whereConditions,
+      relations: ['employee', 'manager', 'developmentOption'],
+      order: { createdAt: 'DESC' },
+    });
+
+    // Deduplicate by ID in case user has overlapping roles
+    const seen = new Set<string>();
+    return results.filter((r) => {
+      if (seen.has(r.id)) return false;
+      seen.add(r.id);
+      return true;
+    });
+  }
+
   /** @deprecated Use findApprovalQueue instead */
   async findHrQueue(): Promise<TokenRequest[]> {
     return this.requestRepo.find({

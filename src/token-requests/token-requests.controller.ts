@@ -107,6 +107,34 @@ export class TokenRequestsController {
   }
 
   /**
+   * GET /token-requests/my-approvals
+   * Role-aware approval history. Behaviour varies by role:
+   *   approver    → all requests assigned to them as manager (all statuses)
+   *   coach       → coaching requests assigned to them as coach (all statuses)
+   *   hr_approver → all manager_approved (pending their action) + requests they acted on
+   *   admin       → all requests company-wide
+   *
+   * Tab filter (meaning differs per role):
+   *   ?tab=pending  → approver/coach: their pending queue
+   *                   hr_approver: requests awaiting final HR review (manager_approved)
+   *                   admin: pending + manager_approved
+   *   ?tab=approved → approver/coach: manager_approved + approved
+   *                   hr_approver: approved requests they personally approved
+   *                   admin: approved
+   *   ?tab=rejected → approver/coach: rejected + cancelled
+   *                   hr_approver: requests they personally rejected at HR level
+   *                   admin: rejected + cancelled
+   */
+  @Get('my-approvals')
+  @Roles(UserRole.APPROVER, UserRole.COACH, UserRole.HR_APPROVER as UserRole, UserRole.ADMIN)
+  getMyApprovals(
+    @CurrentUser() user: User,
+    @Query('tab') tab?: string,
+  ) {
+    return this.tokenRequestsService.findApprovalHistory(user, tab);
+  }
+
+  /**
    * GET /token-requests/coaching/my-overview
    * Coach: get all coaching requests assigned to them (pending/manager_approved/approved),
    * each with their sessions embedded. Used to power the "My Sessions" page.

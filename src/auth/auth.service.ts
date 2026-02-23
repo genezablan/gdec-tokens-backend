@@ -297,7 +297,7 @@ export class AuthService {
 
     const rawToken = crypto.randomBytes(32).toString('hex');
     const hashedToken = await bcrypt.hash(rawToken, 10);
-    const expiry = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
+    const expiry = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
 
     user.passwordResetToken = hashedToken;
     user.passwordResetExpiry = expiry;
@@ -311,7 +311,7 @@ export class AuthService {
         email: user.email,
         name: `${user.firstName} ${user.lastName}`,
         resetLink,
-        expiryMinutes: 30,
+        expiryMinutes: 5,
       });
     } catch {
       // Don't expose email errors to caller
