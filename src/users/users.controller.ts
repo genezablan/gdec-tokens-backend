@@ -53,8 +53,11 @@ export class UsersController {
    */
   @Get('pending-registrations')
   @Roles(UserRole.HR_APPROVER, UserRole.ADMIN)
-  getPendingRegistrations() {
-    return this.usersService.findAll(undefined, undefined, true);
+  async getPendingRegistrations() {
+    const users = await this.usersService.findAll(undefined, undefined, true);
+    const currentYear = new Date().getFullYear();
+    // Attach tokensToBeAllocated so the approval page can display it
+    return users.map((u) => ({ ...u, tokensToBeAllocated: 6, tokenYear: currentYear }));
   }
 
   /**

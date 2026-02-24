@@ -2,14 +2,19 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { InjectRepository } from '@nestjs/typeorm';
 import { ArrayContains, Repository } from 'typeorm';
 import { User } from '../entities/user.entity';
+import { TokenBalance } from '../entities/token-balance.entity';
 import { UserRole } from '../common/enums';
 import { EmailService } from '../common/services/email.service';
+
+const TOKENS_PER_YEAR = 6;
 
 @Injectable()
 export class UsersService {
   constructor(
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
+    @InjectRepository(TokenBalance)
+    private readonly tokenBalanceRepo: Repository<TokenBalance>,
     private readonly emailService: EmailService,
   ) {}
 
@@ -101,12 +106,32 @@ export class UsersService {
     user.isActive = true;
     await this.userRepo.save(user);
 
+    // Auto-allocate tokens for the current year
+    const currentYear = new Date().getFullYear();
+    const existingBalance = await this.tokenBalanceRepo.findOne({
+      where: { userId: user.id, year: currentYear },
+    });
+    if (!existingBalance) {
+      await this.tokenBalanceRepo.save(
+        this.tokenBalanceRepo.create({
+          userId: user.id,
+          year: currentYear,
+          allocated: TOKENS_PER_YEAR,
+          used: 0,
+        }),
+      );
+    }
+
     this.emailService.sendRegistrationApprovedEmail({
       email: user.email,
       name: user.fullName,
     }).catch(() => {});
 
-    return this.safeUser(user);
+    return {
+      ...this.safeUser(user),
+      tokensAllocated: TOKENS_PER_YEAR,
+      tokenYear: currentYear,
+    };
   }
 
   async rejectPendingRegistration(id: string, reason?: string) {
