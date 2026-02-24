@@ -27,12 +27,21 @@ export class CoachAvailabilityService {
       throw new BadRequestException('availableDate cannot be in the past');
     }
 
-    // Prevent duplicate slots for the same coach, same date, same time
-    const existing = await this.availabilityRepo.findOne({
-      where: { coachId, availableDate: dto.availableDate, startTime: dto.startTime, isActive: true },
-    });
-    if (existing) {
-      throw new BadRequestException('A slot already exists for this date and time');
+    // Prevent overlapping slots: reject if any active slot on the same date shares time range
+    // Overlap condition: existingStart < newEnd  AND  existingEnd > newStart
+    const overlapping = await this.availabilityRepo
+      .createQueryBuilder('slot')
+      .where('slot.coachId = :coachId', { coachId })
+      .andWhere('slot.availableDate = :date', { date: dto.availableDate })
+      .andWhere('slot.isActive = true')
+      .andWhere('slot.startTime < :endTime', { endTime: dto.endTime })
+      .andWhere('slot.endTime > :startTime', { startTime: dto.startTime })
+      .getOne();
+
+    if (overlapping) {
+      throw new BadRequestException(
+        `This slot overlaps with an existing slot (${overlapping.startTime}–${overlapping.endTime})`,
+      );
     }
 
     const slot = this.availabilityRepo.create({
@@ -44,11 +53,11 @@ export class CoachAvailabilityService {
     return this.availabilityRepo.save(slot);
   }
 
-  /** Coach: view own availability slots (all future + today, ordered by date/time). */
+  /** Coach: view all own slots (active and inactive), future + today, ordered by date/time. */
   async findMySlots(coachId: string): Promise<CoachAvailability[]> {
     const today = new Date().toISOString().split('T')[0];
     return this.availabilityRepo.find({
-      where: { coachId, isActive: true, availableDate: MoreThanOrEqual(today) as any },
+      where: { coachId, availableDate: MoreThanOrEqual(today) as any },
       order: { availableDate: 'ASC', startTime: 'ASC' },
     });
   }

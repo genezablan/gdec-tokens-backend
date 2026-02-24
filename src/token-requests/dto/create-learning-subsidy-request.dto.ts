@@ -14,6 +14,16 @@ export class CreateLearningSubsidyRequestDto {
   @Max(3000)
   subsidyAmount!: number;
 
+  /** Name of the course or training program being applied for. */
+  @IsString()
+  @IsNotEmpty()
+  courseName!: string;
+
+  /** Training provider or institution offering the course. */
+  @IsString()
+  @IsNotEmpty()
+  provider!: string;
+
   /** Optional S3 URL of a supporting document uploaded before submission. */
   @IsOptional()
   @IsString()

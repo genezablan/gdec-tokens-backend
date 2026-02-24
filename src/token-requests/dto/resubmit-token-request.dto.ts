@@ -7,7 +7,7 @@ import { IsNumber, IsOptional, IsString, IsUUID, Max, Min } from 'class-validato
  *
  * task_offloading:  { attachmentUrl }
  * coaching:         { coachId?, notes?, attachmentUrl? }
- * learning_subsidy: { subsidyAmount?, attachmentUrl? }
+ * learning_subsidy: { subsidyAmount?, courseName?, provider?, attachmentUrl? }
  */
 export class ResubmitTokenRequestDto {
   // ── task_offloading ──────────────────────────────────────────────────────────
@@ -37,4 +37,14 @@ export class ResubmitTokenRequestDto {
   @Min(1000)
   @Max(3000)
   subsidyAmount?: number;
+
+  /** Updated course name. */
+  @IsOptional()
+  @IsString()
+  courseName?: string;
+
+  /** Updated training provider. */
+  @IsOptional()
+  @IsString()
+  provider?: string;
 }
