@@ -17,7 +17,7 @@ import { AuthService } from './auth.service';
 import { ChangePasswordDto, ForgotPasswordDto, RegisterDto, ResetPasswordDto } from './dto';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
-// import { GoogleAuthGuard } from './guards/google-auth.guard';
+import { GoogleAuthGuard } from './guards/google-auth.guard';
 import { MicrosoftAuthGuard } from './guards/microsoft-auth.guard';
 import { Public } from './decorators/public.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
@@ -93,30 +93,35 @@ export class AuthController {
     return this.authService.resetPassword(dto);
   }
 
-  // OAuth endpoints - enable when OAuth is configured
-  /*
+  // Google SSO
   @Public()
   @Get('google')
   @UseGuards(GoogleAuthGuard)
   async googleAuth() {
-    // Initiates Google OAuth flow
+    // Passport redirects to Google login — no body needed
   }
 
   @Public()
   @Get('google/callback')
   @UseGuards(GoogleAuthGuard)
-  async googleAuthCallback(@Req() req) {
-    const { providerId, email, firstName, lastName } = req.user;
-    const user = await this.authService.validateOAuthUser(
-      providerId,
-      email,
-      'google',
-      firstName,
-      lastName,
-    );
-    return this.authService.login(user);
+  async googleAuthCallback(@Req() req, @Res() res: Response) {
+    const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
+    try {
+      const { providerId, email, firstName, lastName } = req.user;
+      const user = await this.authService.validateOAuthUser(
+        providerId,
+        email,
+        'google',
+        firstName,
+        lastName,
+      );
+      const authResponse = await this.authService.login(user);
+      const token = authResponse.accessToken;
+      return res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
+    } catch {
+      return res.redirect(`${frontendUrl}/auth/error?message=Account+not+found.+Please+contact+HR.`);
+    }
   }
-  */
 
   // Microsoft SSO
   @Public()
