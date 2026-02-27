@@ -10,6 +10,8 @@ export interface CreateNotificationDto {
   message: string;
   type?: NotificationType;
   requestId?: string;
+  /** Optional metadata. Use `deeplink` key for the frontend path the CTA should navigate to. */
+  metadata?: Record<string, unknown>;
 }
 
 @Injectable()
@@ -68,6 +70,7 @@ export class NotificationsService {
         message: dto.message,
         type: dto.type ?? NotificationType.INFO,
         requestId: dto.requestId,
+        metadata: dto.metadata,
       }),
     );
 

@@ -43,6 +43,14 @@ export class Notification {
   @Column({ nullable: true })
   requestId: string;
 
+  /**
+   * Optional metadata for the notification.
+   * The most important key is `deeplink` — the frontend path the CTA should navigate to.
+   * Example: { deeplink: '/coaching/abc-123/sessions' }
+   */
+  @Column({ type: 'jsonb', nullable: true })
+  metadata: Record<string, unknown>;
+
   @Column({ default: false })
   isRead: boolean;
 

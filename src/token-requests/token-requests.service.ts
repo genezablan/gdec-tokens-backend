@@ -154,6 +154,7 @@ export class TokenRequestsService {
       message: `Your ${optionType.replace(/_/g, ' ')} request has been submitted and is awaiting approval.`,
       type: NotificationType.INFO,
       requestId: request.id,
+      metadata: { deeplink: '/my-request' },
     }).catch(() => {});
 
     // ── In-app: notify manager/coach ──
@@ -162,6 +163,7 @@ export class TokenRequestsService {
       message: `${employee.firstName} ${employee.lastName} submitted a ${optionType.replace(/_/g, ' ')} request.`,
       type: NotificationType.INFO,
       requestId: request.id,
+      metadata: { deeplink: '/approval' },
     }).catch(() => {});
 
     // ── Notify manager/coach: review required ──
@@ -393,6 +395,7 @@ export class TokenRequestsService {
         message: `${request.employee.firstName} ${request.employee.lastName}'s ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been approved by the ${request.type === DevelopmentOptionType.COACHING ? 'coach' : 'manager'} and needs your review.`,
         type: NotificationType.INFO,
         requestId: request.id,
+        metadata: { deeplink: '/approval' },
       }).catch(() => {});
     }
 
@@ -402,6 +405,7 @@ export class TokenRequestsService {
       message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been approved by your ${request.type === DevelopmentOptionType.COACHING ? 'coach' : 'manager'} and is now pending HR review.`,
       type: NotificationType.INFO,
       requestId: request.id,
+      metadata: { deeplink: '/my-request' },
     }).catch(() => {});
 
     return this.findRequest(requestId);
@@ -434,6 +438,8 @@ export class TokenRequestsService {
         employeeName: `${request.employee.firstName} ${request.employee.lastName}`,
         optionName: request.developmentOption?.name ?? request.type,
         tokenCost: request.tokenCost,
+        requestId: request.id,
+        type: request.type,
       });
     } catch (err: unknown) {
       this.logger.warn(`Failed to send approval email: ${(err as Error).message}`);
@@ -445,6 +451,11 @@ export class TokenRequestsService {
       message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been fully approved. ${request.tokenCost} token${request.tokenCost !== 1 ? 's' : ''} have been deducted.`,
       type: NotificationType.SUCCESS,
       requestId: request.id,
+      metadata: {
+        deeplink: request.type === DevelopmentOptionType.COACHING
+          ? `/coaching/${request.id}/sessions`
+          : '/my-request',
+      },
     }).catch(() => {});
 
     return this.findRequest(requestId);
@@ -501,6 +512,7 @@ export class TokenRequestsService {
       message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request was not approved. Reason: ${dto.comment}`,
       type: NotificationType.ERROR,
       requestId: request.id,
+      metadata: { deeplink: '/my-request' },
     }).catch(() => {});
 
     return this.findRequest(requestId);

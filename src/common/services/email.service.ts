@@ -212,7 +212,7 @@ export class EmailService {
       <p style="margin:0 0 8px;color:${BRAND.textMuted};font-size:14px;">Your request is now under review. You will be notified once your Manager and/or HR has taken action.</p>
       <p style="margin:0;color:${BRAND.textMuted};font-size:14px;">You may track the status of your request anytime via the application.</p>
 
-      ${this.button('View My Request', `${this.frontendUrl}/my-requests`)}
+      ${this.button('View My Request', `${this.frontendUrl}/my-request`)}
     `;
 
     await this.sendEmail({
@@ -307,11 +307,13 @@ export class EmailService {
     employeeName: string;
     optionName: string;
     tokenCost: number;
+    requestId?: string;
+    type?: string;
   }): Promise<void>;
   /** @deprecated use object overload */
   async sendApprovalNotification(email: string, name: string, optionName: string): Promise<void>;
   async sendApprovalNotification(
-    optsOrEmail: { employeeEmail: string; employeeName: string; optionName: string; tokenCost: number } | string,
+    optsOrEmail: { employeeEmail: string; employeeName: string; optionName: string; tokenCost: number; requestId?: string; type?: string } | string,
     name?: string,
     optionNameArg?: string,
   ): Promise<void> {
@@ -319,7 +321,7 @@ export class EmailService {
       ? { employeeEmail: optsOrEmail, employeeName: name!, optionName: optionNameArg!, tokenCost: 0 }
       : optsOrEmail;
 
-    const { employeeEmail, employeeName, optionName, tokenCost } = opts;
+    const { employeeEmail, employeeName, optionName, tokenCost, requestId, type } = opts;
 
     const content = `
       <p style="margin:0 0 4px;">Hi <strong>${employeeName}</strong>,</p>
@@ -335,7 +337,9 @@ export class EmailService {
       <p style="margin:0 0 12px;color:${BRAND.textDark};">You may now proceed with your development activity. Please remember to upload the required completion documents once finished.</p>
       <p style="margin:0 0 20px;color:${BRAND.textDark};">If coaching sessions are included, scheduling details will be shared separately.</p>
 
-      ${this.button('View My Requests', `${this.frontendUrl}/my-requests`, BRAND.green)}
+      ${type === 'coaching' && requestId
+        ? this.button('View My Sessions', `${this.frontendUrl}/coaching/${requestId}/sessions`, BRAND.green)
+        : this.button('View My Request', `${this.frontendUrl}/my-request`, BRAND.green)}
     `;
 
     await this.sendEmail({
@@ -379,7 +383,7 @@ export class EmailService {
       <p style="margin:0 0 12px;color:${BRAND.textDark};">You may revise and resubmit your request through the application once the necessary updates are made.</p>
       <p style="margin:0 0 20px;color:${BRAND.textDark};">If you need clarification, please reach out to your Manager or HR.</p>
 
-      ${this.button('Resubmit Request', `${this.frontendUrl}/my-requests`, BRAND.navy)}
+      ${this.button('Resubmit Request', `${this.frontendUrl}/my-request`, BRAND.navy)}
     `;
 
     await this.sendEmail({
@@ -487,8 +491,9 @@ export class EmailService {
     coachName: string;
     sessionNumber: number;
     scheduledAt: Date;
+    requestId: string;
   }): Promise<void> {
-    const { employeeEmail, employeeName, coachName, sessionNumber, scheduledAt } = opts;
+    const { employeeEmail, employeeName, coachName, sessionNumber, scheduledAt, requestId } = opts;
     const dateStr = this.formatDateTime(scheduledAt);
 
     const content = `
@@ -503,7 +508,7 @@ export class EmailService {
       </table>
 
       <p style="margin:0;color:${BRAND.textMuted};font-size:14px;">Please make sure to attend on time. You may view your session details in the application.</p>
-      ${this.button('View My Sessions', `${this.frontendUrl}/my-requests`, BRAND.green)}
+      ${this.button('View My Sessions', `${this.frontendUrl}/coaching/${requestId}/sessions`, BRAND.green)}
     `;
 
     await this.sendEmail({
@@ -523,8 +528,9 @@ export class EmailService {
     coachName: string;
     sessionNumber: number;
     scheduledAt: Date;
+    requestId: string;
   }): Promise<void> {
-    const { employeeEmail, employeeName, coachName, sessionNumber, scheduledAt } = opts;
+    const { employeeEmail, employeeName, coachName, sessionNumber, scheduledAt, requestId } = opts;
     const dateStr = this.formatDateTime(scheduledAt);
 
     const content = `
@@ -539,7 +545,7 @@ export class EmailService {
       </table>
 
       <p style="margin:0;color:${BRAND.textMuted};font-size:14px;">The slot has been released — you can now choose another available time from your coach's schedule.</p>
-      ${this.button('Book a New Slot', `${this.frontendUrl}/my-requests`, BRAND.gold)}
+      ${this.button('Book a New Slot', `${this.frontendUrl}/coaching/${requestId}/sessions`, BRAND.gold)}
     `;
 
     await this.sendEmail({
@@ -560,8 +566,9 @@ export class EmailService {
     sessionNumber: number;
     scheduledAt: Date;
     sessionNotes?: string | null;
+    requestId: string;
   }): Promise<void> {
-    const { employeeEmail, employeeName, coachName, sessionNumber, scheduledAt, sessionNotes } = opts;
+    const { employeeEmail, employeeName, coachName, sessionNumber, scheduledAt, sessionNotes, requestId } = opts;
     const dateStr = this.formatDateTime(scheduledAt);
 
     const notesRow = sessionNotes
@@ -582,7 +589,7 @@ export class EmailService {
       ${notesRow}
 
       <p style="margin:0;color:${BRAND.textMuted};font-size:14px;">Keep up the great work! Check the application to see your overall progress.</p>
-      ${this.button('View My Sessions', `${this.frontendUrl}/my-requests`, BRAND.green)}
+      ${this.button('View My Sessions', `${this.frontendUrl}/coaching/${requestId}/sessions`, BRAND.green)}
     `;
 
     const notesSection = sessionNotes ? `\n\nCoach Notes:\n${sessionNotes}` : '';
@@ -603,8 +610,9 @@ export class EmailService {
     coachName: string;
     sessionNumber: number;
     scheduledAt: Date;
+    requestId: string;
   }): Promise<void> {
-    const { employeeEmail, employeeName, coachName, sessionNumber, scheduledAt } = opts;
+    const { employeeEmail, employeeName, coachName, sessionNumber, scheduledAt, requestId } = opts;
     const dateStr = this.formatDateTime(scheduledAt);
 
     const content = `
@@ -619,7 +627,7 @@ export class EmailService {
       </table>
 
       <p style="margin:0;color:${BRAND.textMuted};font-size:14px;">Please book a new slot to complete this session. If you believe this is an error, contact your coach or HR.</p>
-      ${this.button('Reschedule Session', `${this.frontendUrl}/my-requests`, BRAND.gold)}
+      ${this.button('Reschedule Session', `${this.frontendUrl}/coaching/${requestId}/sessions`, BRAND.gold)}
     `;
 
     await this.sendEmail({

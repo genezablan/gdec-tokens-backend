@@ -176,6 +176,7 @@ export class CoachingSessionsService {
         message: `${request.employee.fullName} has requested to book Session ${saved.sessionNumber} with you. Please confirm or decline.`,
         type: NotificationType.INFO,
         requestId: requestId,
+        metadata: { deeplink: '/coach/sessions' },
       }).catch(() => {});
     }
 
@@ -218,6 +219,7 @@ export class CoachingSessionsService {
         coachName: coach.fullName,
         sessionNumber: session.sessionNumber,
         scheduledAt: session.scheduledAt,
+        requestId,
       }).catch(() => {});
 
       this.notificationsService.create(session.employeeId, {
@@ -225,6 +227,7 @@ export class CoachingSessionsService {
         message: `Your Session ${session.sessionNumber} with ${coach.fullName} has been confirmed.`,
         type: NotificationType.SUCCESS,
         requestId: requestId,
+        metadata: { deeplink: `/coaching/${requestId}/sessions` },
       }).catch(() => {});
     }
 
@@ -274,6 +277,7 @@ export class CoachingSessionsService {
         coachName: coach.fullName,
         sessionNumber: session.sessionNumber,
         scheduledAt: session.scheduledAt,
+        requestId,
       }).catch(() => {});
 
       this.notificationsService.create(session.employeeId, {
@@ -281,6 +285,7 @@ export class CoachingSessionsService {
         message: `${coach.fullName} declined your Session ${session.sessionNumber} booking. Please select a different slot.`,
         type: NotificationType.WARNING,
         requestId: requestId,
+        metadata: { deeplink: `/coaching/${requestId}/sessions` },
       }).catch(() => {});
     }
 
@@ -327,6 +332,7 @@ export class CoachingSessionsService {
         sessionNumber: session.sessionNumber,
         scheduledAt: session.scheduledAt,
         sessionNotes: saved.sessionNotes,
+        requestId,
       }).catch(() => {});
 
       this.notificationsService.create(session.employeeId, {
@@ -334,6 +340,7 @@ export class CoachingSessionsService {
         message: `Session ${session.sessionNumber} with ${coach.fullName} has been marked as completed.`,
         type: NotificationType.SUCCESS,
         requestId: requestId,
+        metadata: { deeplink: `/coaching/${requestId}/sessions` },
       }).catch(() => {});
     }
 
@@ -417,6 +424,7 @@ export class CoachingSessionsService {
         coachName: coach.fullName,
         sessionNumber: session.sessionNumber,
         scheduledAt: session.scheduledAt,
+        requestId,
       }).catch(() => {});
 
       this.notificationsService.create(session.employeeId, {
@@ -424,6 +432,7 @@ export class CoachingSessionsService {
         message: `A no-show was recorded for your Session ${session.sessionNumber} with ${coach.fullName}. Please reschedule.`,
         type: NotificationType.WARNING,
         requestId: requestId,
+        metadata: { deeplink: `/coaching/${requestId}/sessions` },
       }).catch(() => {});
     }
 
