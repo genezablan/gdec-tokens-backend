@@ -1,5 +1,5 @@
-import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { NestFactory, Reflector } from '@nestjs/core';
+import { ClassSerializerInterceptor, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
 
@@ -28,6 +28,9 @@ async function bootstrap() {
       transform: true,
     }),
   );
+
+  // Strip @Exclude() fields (e.g. password) from all serialized responses
+  app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
 
   // Global prefix
   const apiPrefix = configService.get<string>('API_PREFIX') || 'api';

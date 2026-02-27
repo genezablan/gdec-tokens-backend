@@ -359,7 +359,7 @@ export class AuthService {
     }
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password, ...safeUser } = user;
+    const { password, passwordResetToken, passwordResetExpiry, ...safeUser } = user;
     const resolved = await this.resolveProfilePicture(safeUser);
     return resolved as Omit<User, 'password'>;
   }
@@ -390,7 +390,7 @@ export class AuthService {
     await this.userRepository.save(user);
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password, ...safeUser } = user;
+    const { password, passwordResetToken, passwordResetExpiry, ...safeUser } = user;
     const resolved = await this.resolveProfilePicture(safeUser);
     return resolved as Omit<User, 'password'>;
   }

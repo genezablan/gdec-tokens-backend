@@ -33,6 +33,7 @@ export class User {
   authProvider: AuthProvider;
 
   @Column({ nullable: true })
+  @Exclude()
   providerId: string;
 
   @Column({ length: 50 })
@@ -111,9 +112,11 @@ export class User {
   nickname: string | null;
 
   @Column({ nullable: true, length: 255 })
+  @Exclude()
   passwordResetToken: string;
 
   @Column({ type: 'timestamptz', nullable: true })
+  @Exclude()
   passwordResetExpiry: Date;
 
   @CreateDateColumn()
