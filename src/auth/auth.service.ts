@@ -364,10 +364,23 @@ export class AuthService {
     return resolved as Omit<User, 'password'>;
   }
 
+  async generateProfilePictureUploadUrl(
+    userId: string,
+    filename: string,
+    contentType: string,
+  ): Promise<{ uploadUrl: string; key: string }> {
+    if (!filename || !contentType) {
+      throw new BadRequestException('filename and contentType are required');
+    }
+    const ext = filename.split('.').pop() ?? 'jpg';
+    const key = `profile-pictures/${userId}/${userId}-${Date.now()}.${ext}`;
+    return this.s3Service.generateProfilePicturePutUrl(key, contentType);
+  }
+
   async updateProfile(
     userId: string,
     nickname?: string,
-    file?: Express.Multer.File,
+    profilePictureKey?: string,
   ): Promise<Omit<User, 'password'>> {
     const user = await this.userRepository.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
@@ -376,15 +389,8 @@ export class AuthService {
       user.nickname = nickname.trim() || null;
     }
 
-    if (file) {
-      const ext = file.originalname.split('.').pop() ?? 'jpg';
-      const key = `profile-pictures/${userId}/${userId}-${Date.now()}.${ext}`;
-      await this.s3Service.uploadFile(file.buffer, key, {
-        contentType: file.mimetype,
-        metadata: { userId },
-      });
-      // Store the S3 key — not the full URL — so we can generate signed URLs on read
-      user.profilePicture = key;
+    if (profilePictureKey) {
+      user.profilePicture = profilePictureKey;
     }
 
     await this.userRepository.save(user);

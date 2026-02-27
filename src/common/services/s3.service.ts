@@ -211,4 +211,23 @@ export class S3Service {
 
     return { uploadUrl, fileUrl, key };
   }
+
+  /**
+   * Generates a pre-signed PUT URL for uploading a profile picture directly from the browser.
+   * The caller supplies the already-computed key (profile-pictures/<userId>/<userId>-<ts>.<ext>).
+   * Returns { uploadUrl, key } — presigned URL expires in 5 minutes.
+   */
+  async generateProfilePicturePutUrl(
+    key: string,
+    contentType: string,
+  ): Promise<{ uploadUrl: string; key: string }> {
+    const command = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+      ContentType: contentType,
+    });
+
+    const uploadUrl = await getSignedUrl(this.s3Client, command, { expiresIn: 300 });
+    return { uploadUrl, key };
+  }
 }

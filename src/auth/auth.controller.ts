@@ -10,10 +10,7 @@ import {
   HttpStatus,
   Patch,
   Query,
-  UseInterceptors,
-  UploadedFile,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
@@ -82,15 +79,27 @@ export class AuthController {
     return this.authService.getProfile(userId);
   }
 
+  /**
+   * GET /auth/profile/presigned-upload?filename=photo.jpg&contentType=image/jpeg
+   * Returns a short-lived S3 presigned PUT URL and the key to pass back in PATCH /auth/profile.
+   */
+  @Get('profile/presigned-upload')
+  @UseGuards(JwtAuthGuard)
+  async getProfilePictureUploadUrl(
+    @CurrentUser('id') userId: string,
+    @Query('filename') filename: string,
+    @Query('contentType') contentType: string,
+  ) {
+    return this.authService.generateProfilePictureUploadUrl(userId, filename, contentType);
+  }
+
   @Patch('profile')
   @UseGuards(JwtAuthGuard)
-  @UseInterceptors(FileInterceptor('profilePicture'))
   async updateProfile(
     @CurrentUser('id') userId: string,
     @Body() dto: UpdateProfileDto,
-    @UploadedFile() file?: Express.Multer.File,
   ) {
-    return this.authService.updateProfile(userId, dto.nickname, file);
+    return this.authService.updateProfile(userId, dto.nickname, dto.profilePictureKey);
   }
 
   @Public()
