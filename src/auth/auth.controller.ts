@@ -10,11 +10,14 @@ import {
   HttpStatus,
   Patch,
   Query,
+  UseInterceptors,
+  UploadedFile,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
-import { ChangePasswordDto, ForgotPasswordDto, RegisterDto, ResetPasswordDto } from './dto';
+import { ChangePasswordDto, ForgotPasswordDto, RegisterDto, ResetPasswordDto, UpdateProfileDto } from './dto';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { GoogleAuthGuard } from './guards/google-auth.guard';
@@ -77,6 +80,17 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   async getProfile(@CurrentUser('id') userId: string) {
     return this.authService.getProfile(userId);
+  }
+
+  @Patch('profile')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('profilePicture'))
+  async updateProfile(
+    @CurrentUser('id') userId: string,
+    @Body() dto: UpdateProfileDto,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    return this.authService.updateProfile(userId, dto.nickname, file);
   }
 
   @Public()

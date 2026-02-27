@@ -15,6 +15,7 @@ import { AuthProvider, EmployeeStatus, UserRole } from '../common/enums';
 import { ChangePasswordDto, ForgotPasswordDto, RegisterDto, ResetPasswordDto } from './dto';
 import { AuthResponse, JwtPayload } from './interfaces/jwt-payload.interface';
 import { EmailService } from '../common/services/email.service';
+import { S3Service } from '../common/services/s3.service';
 
 @Injectable()
 export class AuthService {
@@ -24,6 +25,7 @@ export class AuthService {
     private jwtService: JwtService,
     private configService: ConfigService,
     private emailService: EmailService,
+    private s3Service: S3Service,
   ) {}
 
   async validateUser(identifier: string, password: string): Promise<User | null> {
@@ -358,6 +360,50 @@ export class AuthService {
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { password, ...safeUser } = user;
-    return safeUser as Omit<User, 'password'>;
+    const resolved = await this.resolveProfilePicture(safeUser);
+    return resolved as Omit<User, 'password'>;
+  }
+
+  async updateProfile(
+    userId: string,
+    nickname?: string,
+    file?: Express.Multer.File,
+  ): Promise<Omit<User, 'password'>> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    if (nickname !== undefined) {
+      user.nickname = nickname.trim() || null;
+    }
+
+    if (file) {
+      const ext = file.originalname.split('.').pop() ?? 'jpg';
+      const key = `profile-pictures/${userId}/${userId}-${Date.now()}.${ext}`;
+      await this.s3Service.uploadFile(file.buffer, key, {
+        contentType: file.mimetype,
+        metadata: { userId },
+      });
+      // Store the S3 key — not the full URL — so we can generate signed URLs on read
+      user.profilePicture = key;
+    }
+
+    await this.userRepository.save(user);
+
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { password, ...safeUser } = user;
+    const resolved = await this.resolveProfilePicture(safeUser);
+    return resolved as Omit<User, 'password'>;
+  }
+
+  /**
+   * Replaces the stored S3 key in `profilePicture` with a short-lived (15 min) presigned GET URL.
+   * If the field is null or already a full URL (legacy), it is returned as-is.
+   */
+  private async resolveProfilePicture<T extends { profilePicture?: string | null }>(user: T): Promise<T> {
+    if (!user.profilePicture || user.profilePicture.startsWith('http')) {
+      return user;
+    }
+    const signedUrl = await this.s3Service.getPresignedDownloadUrl(user.profilePicture, 900);
+    return { ...user, profilePicture: signedUrl };
   }
 }

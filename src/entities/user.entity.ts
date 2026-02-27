@@ -104,6 +104,12 @@ export class User {
   @Column({ default: false })
   isPendingApproval: boolean;
 
+  @Column({ type: 'varchar', nullable: true, length: 500 })
+  profilePicture: string | null;
+
+  @Column({ type: 'varchar', nullable: true, length: 50 })
+  nickname: string | null;
+
   @Column({ nullable: true, length: 255 })
   passwordResetToken: string;
 

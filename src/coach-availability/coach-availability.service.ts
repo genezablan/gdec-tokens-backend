@@ -98,6 +98,39 @@ export class CoachAvailabilityService {
     return this.availabilityRepo.save(slot);
   }
 
+  /** Coach: reactivate a previously deactivated slot. */
+  async reactivateSlot(slotId: string, coachId: string): Promise<CoachAvailability> {
+    const slot = await this.availabilityRepo.findOne({ where: { id: slotId } });
+    if (!slot) throw new NotFoundException('Availability slot not found');
+    if (slot.coachId !== coachId) throw new ForbiddenException('You can only reactivate your own slots');
+    if (slot.isActive) throw new BadRequestException('This slot is already active');
+
+    const today = new Date().toISOString().split('T')[0];
+    if (slot.availableDate < today) {
+      throw new BadRequestException('Cannot reactivate a slot that is in the past');
+    }
+
+    // Re-check for overlaps — other active slots may have been added while this one was inactive
+    const overlapping = await this.availabilityRepo
+      .createQueryBuilder('s')
+      .where('s.coachId = :coachId', { coachId })
+      .andWhere('s.availableDate = :date', { date: slot.availableDate })
+      .andWhere('s.isActive = true')
+      .andWhere('s.id != :slotId', { slotId })
+      .andWhere('s.startTime < :endTime', { endTime: slot.endTime })
+      .andWhere('s.endTime > :startTime', { startTime: slot.startTime })
+      .getOne();
+
+    if (overlapping) {
+      throw new BadRequestException(
+        `Cannot reactivate: overlaps with an existing active slot (${overlapping.startTime}–${overlapping.endTime})`,
+      );
+    }
+
+    slot.isActive = true;
+    return this.availabilityRepo.save(slot);
+  }
+
   /** Internal: mark a slot as booked (called by session booking logic). */
   async markBooked(slotId: string): Promise<CoachAvailability> {
     const slot = await this.availabilityRepo.findOne({ where: { id: slotId } });
