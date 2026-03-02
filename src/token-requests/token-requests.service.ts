@@ -6,12 +6,14 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import { TokenRequest } from '../entities/token-request.entity';
 import { User } from '../entities/user.entity';
 import { DevelopmentOption } from '../entities/development-option.entity';
 import { TokenBalancesService } from '../token-balances/token-balances.service';
 import { EmailService } from '../common/services/email.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../entities/notification.entity';
 import { RequestStatus, UserRole, DevelopmentOptionType } from '../common/enums';
 import { CreateTaskOffloadingRequestDto } from './dto/create-task-offloading-request.dto';
 import { CreateCoachingRequestDto } from './dto/create-coaching-request.dto';
@@ -32,6 +34,7 @@ export class TokenRequestsService {
     private readonly optionRepo: Repository<DevelopmentOption>,
     private readonly tokenBalancesService: TokenBalancesService,
     private readonly emailService: EmailService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -132,15 +135,51 @@ export class TokenRequestsService {
     await this.requestRepo.save(request);
     this.logger.log(`Token request created: ${request.id} by employee ${employeeId}`);
 
+    // ── Notify employee: submission confirmation ──
     try {
-      await this.emailService.sendRequestNotification(
-        manager.email,
-        `${employee.firstName} ${employee.lastName}`,
-        request.type,
-        request.id,
-      );
+      await this.emailService.sendSubmissionConfirmation({
+        employeeEmail: employee.email,
+        employeeName: `${employee.firstName} ${employee.lastName}`,
+        optionName: optionType,
+        tokenCost,
+        submissionDate: new Date(),
+      });
     } catch (err: unknown) {
-      this.logger.warn(`Failed to send manager notification: ${(err as Error).message}`);
+      this.logger.warn(`Failed to send submission confirmation: ${(err as Error).message}`);
+    }
+
+    // ── In-app: submission confirmation to employee ──
+    this.notificationsService.create(employeeId, {
+      title: 'Request Submitted',
+      message: `Your ${optionType.replace(/_/g, ' ')} request has been submitted and is awaiting approval.`,
+      type: NotificationType.INFO,
+      requestId: request.id,
+      metadata: { deeplink: '/my-request' },
+    }).catch(() => {});
+
+    // ── In-app: notify manager/coach ──
+    this.notificationsService.create(managerId, {
+      title: 'New Request Pending Your Approval',
+      message: `${employee.firstName} ${employee.lastName} submitted a ${optionType.replace(/_/g, ' ')} request.`,
+      type: NotificationType.INFO,
+      requestId: request.id,
+      metadata: { deeplink: '/approval' },
+    }).catch(() => {});
+
+    // ── Notify manager/coach: review required ──
+    try {
+      await this.emailService.sendFirstLevelReviewNotification({
+        approverEmail: manager.email,
+        approverName: `${manager.firstName} ${manager.lastName}`,
+        approverRole: optionType === DevelopmentOptionType.COACHING ? 'Coach' : 'Manager',
+        employeeName: `${employee.firstName} ${employee.lastName}`,
+        optionName: optionType,
+        tokenCost,
+        submissionDate: new Date(),
+        requestId: request.id,
+      });
+    } catch (err: unknown) {
+      this.logger.warn(`Failed to send first-level reviewer notification: ${(err as Error).message}`);
     }
 
     return this.findRequest(request.id);
@@ -198,17 +237,27 @@ export class TokenRequestsService {
 
   /**
    * POST /token-requests/coaching
-   * Costs 2 tokens. Coach must exist and have the coach role.
+   * Costs 2 tokens.
+   * Approval flow: Employee → Coach (first-level) → HR (final) → tokens deducted.
+   * The coach is stored as managerId so the standard approve/reject routing works.
    */
   async createCoaching(
     employeeId: string,
     dto: CreateCoachingRequestDto,
   ): Promise<TokenRequest> {
-    const { employee, option, year, balance, manager } = await this.prepareRequest(
-      employeeId,
-      dto.developmentOptionId,
-      DevelopmentOptionType.COACHING,
-    );
+    // Manually prepare — coaching does not require the supervisor to have approver role.
+    const employee = await this.userRepo.findOne({ where: { id: employeeId } });
+    if (!employee) throw new NotFoundException('Employee not found');
+
+    const option = await this.optionRepo.findOne({ where: { id: dto.developmentOptionId } });
+    if (!option) throw new NotFoundException('Development option not found');
+    if (!option.isActive) throw new BadRequestException('This development option is currently inactive');
+    if (option.type !== DevelopmentOptionType.COACHING) {
+      throw new BadRequestException(`Expected a coaching option, got ${option.type}`);
+    }
+
+    const year = new Date().getFullYear();
+    const balance = await this.tokenBalancesService.getBalance(employeeId, year);
 
     // Validate coach
     const coach = await this.userRepo.findOne({ where: { id: dto.coachId } });
@@ -226,15 +275,17 @@ export class TokenRequestsService {
       );
     }
 
+    // Use coach as the first-level approver (managerId = coach.id).
+    // snapshotManagerName captures the coach's name as the first approver.
     return this.saveAndNotify({
       employeeId,
       optionId: option.id,
       optionType: option.type,
       tokenCost: option.tokenCost,
       year,
-      managerId: manager.id,
+      managerId: coach.id,   // ← coach, not supervisor
       employee,
-      manager,
+      manager: coach,         // ← notifies coach by email
       formData: {
         coachId: dto.coachId,
         coachName: `${coach.firstName} ${coach.lastName}`,
@@ -312,24 +363,50 @@ export class TokenRequestsService {
     this.logger.log(`Request ${requestId} manager-approved by ${approverId}`);
 
     // ── Resolve HR and notify ──
-    const hrUser = await this.userRepo
+    const hrUsers = await this.userRepo
       .createQueryBuilder('user')
       .where(':role = ANY(user.roles)', { role: UserRole.HR_APPROVER })
       .andWhere('user.isActive = true')
-      .getOne();
+      .getMany();
 
-    if (hrUser) {
+    const firstApprover = await this.userRepo.findOne({ where: { id: request.managerId } });
+
+    for (const hrUser of hrUsers) {
       try {
-        await this.emailService.sendRequestNotification(
-          hrUser.email,
-          `${request.employee.firstName} ${request.employee.lastName}`,
-          request.developmentOption.name,
-          request.id,
-        );
+        await this.emailService.sendHrReviewNotification({
+          hrEmail: hrUser.email,
+          hrName: `${hrUser.firstName} ${hrUser.lastName}`,
+          employeeName: `${request.employee.firstName} ${request.employee.lastName}`,
+          optionName: request.developmentOption?.name ?? request.type,
+          tokenCost: request.tokenCost,
+          firstApproverName: firstApprover
+            ? `${firstApprover.firstName} ${firstApprover.lastName}`
+            : request.snapshotManagerName,
+          firstApproverRole: request.type === DevelopmentOptionType.COACHING ? 'Coach' : 'Manager',
+          requestId: request.id,
+        });
       } catch (err: unknown) {
         this.logger.warn(`Failed to send HR notification: ${(err as Error).message}`);
       }
+
+      // ── In-app: notify HR ──
+      this.notificationsService.create(hrUser.id, {
+        title: 'Request Pending HR Approval',
+        message: `${request.employee.firstName} ${request.employee.lastName}'s ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been approved by the ${request.type === DevelopmentOptionType.COACHING ? 'coach' : 'manager'} and needs your review.`,
+        type: NotificationType.INFO,
+        requestId: request.id,
+        metadata: { deeplink: '/approval' },
+      }).catch(() => {});
     }
+
+    // ── In-app: notify employee that manager approved ──
+    this.notificationsService.create(request.employeeId, {
+      title: 'Request Approved by Manager',
+      message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been approved by your ${request.type === DevelopmentOptionType.COACHING ? 'coach' : 'manager'} and is now pending HR review.`,
+      type: NotificationType.INFO,
+      requestId: request.id,
+      metadata: { deeplink: '/my-request' },
+    }).catch(() => {});
 
     return this.findRequest(requestId);
   }
@@ -356,14 +433,30 @@ export class TokenRequestsService {
 
     // ── Notify employee ──
     try {
-      await this.emailService.sendApprovalNotification(
-        request.employee.email,
-        `${request.employee.firstName} ${request.employee.lastName}`,
-        request.developmentOption?.name ?? request.type,
-      );
+      await this.emailService.sendApprovalNotification({
+        employeeEmail: request.employee.email,
+        employeeName: `${request.employee.firstName} ${request.employee.lastName}`,
+        optionName: request.developmentOption?.name ?? request.type,
+        tokenCost: request.tokenCost,
+        requestId: request.id,
+        type: request.type,
+      });
     } catch (err: unknown) {
       this.logger.warn(`Failed to send approval email: ${(err as Error).message}`);
     }
+
+    // ── In-app: notify employee final approval ──
+    this.notificationsService.create(request.employeeId, {
+      title: 'Request Approved! 🎉',
+      message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been fully approved. ${request.tokenCost} token${request.tokenCost !== 1 ? 's' : ''} have been deducted.`,
+      type: NotificationType.SUCCESS,
+      requestId: request.id,
+      metadata: {
+        deeplink: request.type === DevelopmentOptionType.COACHING
+          ? `/coaching/${request.id}/sessions`
+          : '/my-request',
+      },
+    }).catch(() => {});
 
     return this.findRequest(requestId);
   }
@@ -403,15 +496,24 @@ export class TokenRequestsService {
 
     // ── Notify employee ──
     try {
-      await this.emailService.sendRejectionNotification(
-        request.employee.email,
-        `${request.employee.firstName} ${request.employee.lastName}`,
-        request.developmentOption?.name ?? request.type,
-        dto.comment,
-      );
+      await this.emailService.sendRejectionNotification({
+        employeeEmail: request.employee.email,
+        employeeName: `${request.employee.firstName} ${request.employee.lastName}`,
+        optionName: request.developmentOption?.name ?? request.type,
+        comment: dto.comment,
+      });
     } catch (err: unknown) {
       this.logger.warn(`Failed to send rejection email: ${(err as Error).message}`);
     }
+
+    // ── In-app: notify employee rejection ──
+    this.notificationsService.create(request.employeeId, {
+      title: 'Request Not Approved',
+      message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request was not approved. Reason: ${dto.comment}`,
+      type: NotificationType.ERROR,
+      requestId: request.id,
+      metadata: { deeplink: '/my-request' },
+    }).catch(() => {});
 
     return this.findRequest(requestId);
   }
@@ -506,8 +608,8 @@ export class TokenRequestsService {
         formData.tokenCost = newTokenCost;
         request.tokenCost = newTokenCost;
       }
-      if (dto.courseName) formData.courseName = dto.courseName;
-      if (dto.provider) formData.provider = dto.provider;
+      if (dto.courseName !== undefined) formData.courseName = dto.courseName;
+      if (dto.provider !== undefined) formData.provider = dto.provider;
       if (dto.attachmentUrl) request.attachmentUrl = dto.attachmentUrl;
       request.formData = formData;
     }
@@ -522,16 +624,20 @@ export class TokenRequestsService {
     await this.requestRepo.save(request);
     this.logger.log(`Request ${requestId} resubmitted by employee ${employeeId}`);
 
-    // ── Re-notify manager ──
+    // ── Re-notify manager/coach ──
     const manager = await this.userRepo.findOne({ where: { id: request.managerId } });
     if (manager) {
       try {
-        await this.emailService.sendRequestNotification(
-          manager.email,
-          `${request.employee.firstName} ${request.employee.lastName}`,
-          request.type,
-          request.id,
-        );
+        await this.emailService.sendFirstLevelReviewNotification({
+          approverEmail: manager.email,
+          approverName: `${manager.firstName} ${manager.lastName}`,
+          approverRole: request.type === DevelopmentOptionType.COACHING ? 'Coach' : 'Manager',
+          employeeName: `${request.employee.firstName} ${request.employee.lastName}`,
+          optionName: request.developmentOption?.name ?? request.type,
+          tokenCost: request.tokenCost,
+          submissionDate: new Date(),
+          requestId: request.id,
+        });
       } catch (err: unknown) {
         this.logger.warn(`Failed to send resubmit notification: ${(err as Error).message}`);
       }
@@ -561,6 +667,7 @@ export class TokenRequestsService {
   ): Promise<(TokenRequest & { queueType: 'manager' | 'hr' })[]> {
     const results: (TokenRequest & { queueType: 'manager' | 'hr' })[] = [];
 
+    // Managers (approver role) see pending non-coaching requests assigned to them.
     if (user.roles.includes(UserRole.APPROVER) || user.roles.includes(UserRole.ADMIN as UserRole)) {
       const managerItems = await this.requestRepo.find({
         where: { managerId: user.id, status: RequestStatus.PENDING },
@@ -568,6 +675,26 @@ export class TokenRequestsService {
         order: { createdAt: 'ASC' },
       });
       results.push(...managerItems.map((r) => Object.assign(r, { queueType: 'manager' as const })));
+    }
+
+    // Coaches see pending coaching requests where they are the assigned coach (managerId = their id).
+    if (user.roles.includes(UserRole.COACH)) {
+      const coachItems = await this.requestRepo.find({
+        where: {
+          managerId: user.id,
+          status: RequestStatus.PENDING,
+          type: DevelopmentOptionType.COACHING,
+        },
+        relations: ['employee', 'developmentOption'],
+        order: { createdAt: 'ASC' },
+      });
+      // Only add items not already in results (in case user has both coach + approver roles)
+      const existingIds = new Set(results.map((r) => r.id));
+      results.push(
+        ...coachItems
+          .filter((r) => !existingIds.has(r.id))
+          .map((r) => Object.assign(r, { queueType: 'manager' as const })),
+      );
     }
 
     if (
@@ -585,6 +712,103 @@ export class TokenRequestsService {
     return results;
   }
 
+  /**
+   * Manager: full history of all requests they have been assigned to,
+   * regardless of current status. Optional tab filter:
+   *   tab=pending   → status = pending (still awaiting their action)
+   *   tab=approved  → manager_approved + approved (they already approved)
+   *   tab=rejected  → rejected + cancelled
+   */
+  /**
+   * Unified approval history for all approver roles.
+   *
+   * Role behaviour:
+   *   admin       → all requests, tab maps to broad status groups
+   *   approver    → requests where managerId = user.id (their direct queue)
+   *   coach       → coaching requests where managerId = user.id
+   *   hr_approver → all manager_approved (pending their action)
+   *                 + requests where hrId = user.id (they approved)
+   *                 + requests they rejected at HR level
+   *   multi-role  → union of applicable sets, deduplicated
+   *
+   * Tab filter (meaning varies by role — see inline comments):
+   *   pending  → approver/coach: status=pending | hr: status=manager_approved | admin: pending+manager_approved
+   *   approved → approver/coach: manager_approved+approved | hr: approved they acted on | admin: approved
+   *   rejected → approver/coach: rejected+cancelled | hr: rejected they acted on | admin: rejected+cancelled
+   */
+  async findApprovalHistory(user: User, tab?: string): Promise<TokenRequest[]> {
+    const roles = user.roles as string[];
+    const isAdmin   = roles.includes(UserRole.ADMIN as string);
+    const isHr      = roles.includes('hr_approver');
+    const isManager = roles.includes(UserRole.APPROVER as string);
+    const isCoach   = roles.includes(UserRole.COACH as string);
+
+    // ── Admin: full table, broad tab groups ────────────────────────────────
+    if (isAdmin) {
+      const adminStatusMap: Record<string, object> = {
+        pending:  { status: In([RequestStatus.PENDING, RequestStatus.MANAGER_APPROVED as RequestStatus]) },
+        approved: { status: RequestStatus.APPROVED },
+        rejected: { status: In([RequestStatus.REJECTED, RequestStatus.CANCELLED]) },
+      };
+      return this.requestRepo.find({
+        where: tab && adminStatusMap[tab] ? adminStatusMap[tab] : {},
+        relations: ['employee', 'manager', 'developmentOption'],
+        order: { createdAt: 'DESC' },
+      });
+    }
+
+    const whereConditions: object[] = [];
+
+    // ── Manager / Coach: requests assigned to them ─────────────────────────
+    // Both roles store the user as managerId, so one condition covers both.
+    if (isManager || isCoach) {
+      const managerTabMap: Record<string, object> = {
+        pending:  { status: RequestStatus.PENDING },
+        approved: { status: In([RequestStatus.MANAGER_APPROVED as RequestStatus, RequestStatus.APPROVED]) },
+        rejected: { status: In([RequestStatus.REJECTED, RequestStatus.CANCELLED]) },
+      };
+      const statusClause = tab && managerTabMap[tab] ? managerTabMap[tab] : {};
+      whereConditions.push({ managerId: user.id, ...statusClause });
+    }
+
+    // ── HR Approver: requests they need to act on / have acted on ──────────
+    if (isHr) {
+      if (!tab) {
+        // No filter: everything in HR scope
+        whereConditions.push(
+          { status: RequestStatus.MANAGER_APPROVED as RequestStatus },   // awaiting their action
+          { hrId: user.id },                                              // they approved
+          { rejectedById: user.id, rejectedByLevel: 'hr' },              // they rejected
+        );
+      } else if (tab === 'pending') {
+        // "Pending" for HR = requests awaiting their final review (company-wide)
+        whereConditions.push({ status: RequestStatus.MANAGER_APPROVED as RequestStatus });
+      } else if (tab === 'approved') {
+        // Requests they personally approved
+        whereConditions.push({ status: RequestStatus.APPROVED, hrId: user.id });
+      } else if (tab === 'rejected') {
+        // Requests they personally rejected
+        whereConditions.push({ rejectedById: user.id, rejectedByLevel: 'hr' });
+      }
+    }
+
+    if (whereConditions.length === 0) return [];
+
+    const results = await this.requestRepo.find({
+      where: whereConditions,
+      relations: ['employee', 'manager', 'developmentOption'],
+      order: { createdAt: 'DESC' },
+    });
+
+    // Deduplicate by ID in case user has overlapping roles
+    const seen = new Set<string>();
+    return results.filter((r) => {
+      if (seen.has(r.id)) return false;
+      seen.add(r.id);
+      return true;
+    });
+  }
+
   /** @deprecated Use findApprovalQueue instead */
   async findHrQueue(): Promise<TokenRequest[]> {
     return this.requestRepo.find({
@@ -594,9 +818,27 @@ export class TokenRequestsService {
     });
   }
 
-  /** Admin: all requests, optionally filtered by status. */
-  async findAll(status?: RequestStatus): Promise<TokenRequest[]> {
-    const where = status ? { status } : {};
+  /**
+   * Admin: all requests.
+   * Filter priority: tab > status > none.
+   * tab=active      → pending + manager_approved
+   * tab=completed   → approved
+   * tab=rejected    → rejected + cancelled
+   */
+  async findAll(status?: RequestStatus, tab?: string): Promise<TokenRequest[]> {
+    const TAB_STATUSES: Record<string, RequestStatus[]> = {
+      active: [RequestStatus.PENDING, RequestStatus.MANAGER_APPROVED as RequestStatus],
+      completed: [RequestStatus.APPROVED],
+      rejected: [RequestStatus.REJECTED, RequestStatus.CANCELLED],
+    };
+
+    let where: object = {};
+    if (tab && TAB_STATUSES[tab]) {
+      where = { status: In(TAB_STATUSES[tab]) };
+    } else if (status) {
+      where = { status };
+    }
+
     return this.requestRepo.find({
       where,
       relations: ['employee', 'manager', 'hr', 'developmentOption'],

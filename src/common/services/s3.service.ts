@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { v4 as uuidv4 } from 'uuid';
 
 export interface UploadFileOptions {
   contentType?: string;
@@ -149,11 +150,84 @@ export class S3Service {
     filename: string,
     contentType?: string,
   ): Promise<UploadFileResult> {
-    const { v4: uuidv4 } = await import('uuid');
     const key = `token-request-attachments/${userId}/${uuidv4()}/${filename}`;
     return this.uploadFile(buffer, key, {
       contentType,
       metadata: { userId, originalFilename: filename },
     });
+  }
+
+  /**
+   * Generates a pre-signed PUT URL so the browser can upload directly to S3.
+   * Returns { uploadUrl, fileUrl, key }.
+   * The browser PUTs the file to uploadUrl, then passes fileUrl as attachmentUrl.
+   * Expires in 5 minutes.
+   */
+  async generatePresignedUploadUrl(
+    userId: string,
+    filename: string,
+    contentType: string,
+  ): Promise<{ uploadUrl: string; fileUrl: string; key: string }> {
+    const key = `token-request-attachments/${userId}/${uuidv4()}/${filename}`;
+    const region = this.configService.get<string>('s3.region') || 'ap-southeast-1';
+
+    const command = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+      ContentType: contentType,
+    });
+
+    const uploadUrl = await getSignedUrl(this.s3Client, command, { expiresIn: 300 });
+    // Encode each path segment so the URL is valid regardless of filename characters.
+    // Forward slashes (folder separators) are NOT encoded.
+    const encodedKey = key.split('/').map(encodeURIComponent).join('/');
+    const fileUrl = `https://${this.bucketName}.s3.${region}.amazonaws.com/${encodedKey}`;
+
+    return { uploadUrl, fileUrl, key };
+  }
+
+  /**
+   * Generates a pre-signed PUT URL for uploading a form template directly from the browser.
+   * Key pattern: form-templates/<optionType>/<uuid>/<filename>
+   * Expires in 5 minutes.
+   */
+  async generateFormTemplatePresignedUploadUrl(
+    optionType: string,
+    filename: string,
+    contentType: string,
+  ): Promise<{ uploadUrl: string; fileUrl: string; key: string }> {
+    const key = `form-templates/${optionType}/${uuidv4()}/${filename}`;
+    const region = this.configService.get<string>('s3.region') || 'ap-southeast-1';
+
+    const command = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+      ContentType: contentType,
+    });
+
+    const uploadUrl = await getSignedUrl(this.s3Client, command, { expiresIn: 300 });
+    const encodedKey = key.split('/').map(encodeURIComponent).join('/');
+    const fileUrl = `https://${this.bucketName}.s3.${region}.amazonaws.com/${encodedKey}`;
+
+    return { uploadUrl, fileUrl, key };
+  }
+
+  /**
+   * Generates a pre-signed PUT URL for uploading a profile picture directly from the browser.
+   * The caller supplies the already-computed key (profile-pictures/<userId>/<userId>-<ts>.<ext>).
+   * Returns { uploadUrl, key } — presigned URL expires in 5 minutes.
+   */
+  async generateProfilePicturePutUrl(
+    key: string,
+    contentType: string,
+  ): Promise<{ uploadUrl: string; key: string }> {
+    const command = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+      ContentType: contentType,
+    });
+
+    const uploadUrl = await getSignedUrl(this.s3Client, command, { expiresIn: 300 });
+    return { uploadUrl, key };
   }
 }

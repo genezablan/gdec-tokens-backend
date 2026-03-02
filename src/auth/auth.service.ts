@@ -9,10 +9,13 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
 import { User } from '../entities/user.entity';
-import { AuthProvider } from '../common/enums';
-import { ChangePasswordDto } from './dto';
+import { AuthProvider, EmployeeStatus, UserRole } from '../common/enums';
+import { ChangePasswordDto, ForgotPasswordDto, RegisterDto, ResetPasswordDto } from './dto';
 import { AuthResponse, JwtPayload } from './interfaces/jwt-payload.interface';
+import { EmailService } from '../common/services/email.service';
+import { S3Service } from '../common/services/s3.service';
 
 @Injectable()
 export class AuthService {
@@ -21,6 +24,8 @@ export class AuthService {
     private userRepository: Repository<User>,
     private jwtService: JwtService,
     private configService: ConfigService,
+    private emailService: EmailService,
+    private s3Service: S3Service,
   ) {}
 
   async validateUser(identifier: string, password: string): Promise<User | null> {
@@ -31,6 +36,11 @@ export class AuthService {
 
     if (!user) {
       return null;
+    }
+
+    // Check if account is pending HR approval
+    if (user.isPendingApproval) {
+      throw new UnauthorizedException('Your account is pending HR approval. You will be notified by email once approved.');
     }
 
     // Check if user is active
@@ -212,6 +222,132 @@ export class AuthService {
     }
   }
 
+  async getDepartments(): Promise<string[]> {
+    const rows = await this.userRepository
+      .createQueryBuilder('user')
+      .select('DISTINCT user.department', 'department')
+      .where('user.isActive = :isActive', { isActive: true })
+      .orderBy('user.department', 'ASC')
+      .getRawMany<{ department: string }>();
+
+    return rows.map((r) => r.department);
+  }
+
+  async getSupervisorsByDepartment(department: string) {
+    const users = await this.userRepository
+      .createQueryBuilder('user')
+      .where('user.department = :department', { department })
+      .andWhere('user.isActive = :isActive', { isActive: true })
+      .andWhere(':role = ANY(user.roles)', { role: 'approver' })
+      .orderBy('user.lastName', 'ASC')
+      .addOrderBy('user.firstName', 'ASC')
+      .getMany();
+
+    return users.map((u) => ({
+      id: u.id,
+      fullName: u.fullName,
+      position: u.position,
+    }));
+  }
+
+  async register(dto: RegisterDto): Promise<{ message: string }> {
+    const existing = await this.userRepository.findOne({ where: { email: dto.email } });
+    if (existing) {
+      throw new BadRequestException('An account with this email already exists');
+    }
+
+    // Verify the supervisor exists
+    const supervisor = await this.userRepository.findOne({
+      where: { id: dto.immediateSupervisorId },
+    });
+    if (!supervisor) {
+      throw new BadRequestException('The selected supervisor does not exist');
+    }
+
+    // Auto-generate employeeId: count all users and pad to 3 digits
+    const count = await this.userRepository.count();
+    const employeeId = `GDC-${String(count + 1).padStart(3, '0')}`;
+
+    const hashedPassword = await bcrypt.hash(dto.password, 10);
+
+    const user = this.userRepository.create({
+      employeeId,
+      email: dto.email,
+      password: hashedPassword,
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+      department: dto.department,
+      immediateSupervisorId: dto.immediateSupervisorId,
+      contact: dto.contact,
+      roles: [UserRole.EMPLOYEE],
+      employeeStatus: EmployeeStatus.PROBATIONARY,
+      isActive: false,          // Cannot log in until HR approves
+      isPendingApproval: true,  // Flags account for HR review
+      isPasswordChanged: true,  // They set their own password at registration
+    });
+
+    await this.userRepository.save(user);
+
+    return { message: 'Registration submitted. Your account is pending HR approval. You will receive an email once your account is approved.' };
+  }
+
+  async forgotPassword(dto: ForgotPasswordDto): Promise<{ message: string }> {
+    const user = await this.userRepository.findOne({ where: { email: dto.email } });
+    const silentSuccess = { message: 'If that email exists, a reset link has been sent.' };
+
+    if (!user || !user.isActive) return silentSuccess;
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const hashedToken = await bcrypt.hash(rawToken, 10);
+    const expiry = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+    user.passwordResetToken = hashedToken;
+    user.passwordResetExpiry = expiry;
+    await this.userRepository.save(user);
+
+    const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
+    const resetLink = `${frontendUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
+
+    try {
+      await this.emailService.sendPasswordResetEmail({
+        email: user.email,
+        name: `${user.firstName} ${user.lastName}`,
+        resetLink,
+        expiryMinutes: 5,
+      });
+    } catch {
+      // Don't expose email errors to caller
+    }
+
+    return silentSuccess;
+  }
+
+  async resetPassword(dto: ResetPasswordDto): Promise<{ message: string }> {
+    const user = await this.userRepository.findOne({ where: { email: dto.email } });
+
+    if (!user || !user.passwordResetToken || !user.passwordResetExpiry) {
+      throw new BadRequestException('Invalid or expired reset token');
+    }
+
+    if (new Date() > user.passwordResetExpiry) {
+      throw new BadRequestException('Reset token has expired');
+    }
+
+    const isValid = await bcrypt.compare(dto.token, user.passwordResetToken);
+    if (!isValid) {
+      throw new BadRequestException('Invalid or expired reset token');
+    }
+
+    user.password = await bcrypt.hash(dto.newPassword, 10);
+    user.isPasswordChanged = true;
+    user.passwordResetToken = null as any;
+    user.passwordResetExpiry = null as any;
+
+    await this.userRepository.save(user);
+
+    return { message: 'Password reset successful. You may now log in.' };
+  }
+
   async getProfile(userId: string): Promise<Omit<User, 'password'>> {
     const user = await this.userRepository.findOne({
       where: { id: userId },
@@ -223,7 +359,57 @@ export class AuthService {
     }
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password, ...safeUser } = user;
-    return safeUser as Omit<User, 'password'>;
+    const { password, passwordResetToken, passwordResetExpiry, ...safeUser } = user;
+    const resolved = await this.resolveProfilePicture(safeUser);
+    return resolved as Omit<User, 'password'>;
+  }
+
+  async generateProfilePictureUploadUrl(
+    userId: string,
+    filename: string,
+    contentType: string,
+  ): Promise<{ uploadUrl: string; key: string }> {
+    if (!filename || !contentType) {
+      throw new BadRequestException('filename and contentType are required');
+    }
+    const ext = filename.split('.').pop() ?? 'jpg';
+    const key = `profile-pictures/${userId}/${userId}-${Date.now()}.${ext}`;
+    return this.s3Service.generateProfilePicturePutUrl(key, contentType);
+  }
+
+  async updateProfile(
+    userId: string,
+    nickname?: string,
+    profilePictureKey?: string,
+  ): Promise<Omit<User, 'password'>> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    if (nickname !== undefined) {
+      user.nickname = nickname.trim() || null;
+    }
+
+    if (profilePictureKey) {
+      user.profilePicture = profilePictureKey;
+    }
+
+    await this.userRepository.save(user);
+
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { password, passwordResetToken, passwordResetExpiry, ...safeUser } = user;
+    const resolved = await this.resolveProfilePicture(safeUser);
+    return resolved as Omit<User, 'password'>;
+  }
+
+  /**
+   * Replaces the stored S3 key in `profilePicture` with a short-lived (15 min) presigned GET URL.
+   * If the field is null or already a full URL (legacy), it is returned as-is.
+   */
+  private async resolveProfilePicture<T extends { profilePicture?: string | null }>(user: T): Promise<T> {
+    if (!user.profilePicture || user.profilePicture.startsWith('http')) {
+      return user;
+    }
+    const signedUrl = await this.s3Service.getPresignedDownloadUrl(user.profilePicture, 900);
+    return { ...user, profilePicture: signedUrl };
   }
 }

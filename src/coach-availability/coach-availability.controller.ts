@@ -74,4 +74,18 @@ export class CoachAvailabilityController {
   ) {
     return this.service.deactivateSlot(id, user.id);
   }
+
+  /**
+   * PATCH /coach-availability/:id/reactivate
+   * Coach reactivates a previously deactivated slot.
+   * Returns 400 if the slot is already active, in the past, or overlaps with another active slot.
+   */
+  @Patch(':id/reactivate')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  reactivateSlot(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.service.reactivateSlot(id, user.id);
+  }
 }

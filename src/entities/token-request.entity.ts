@@ -83,8 +83,8 @@ export class TokenRequest {
   @Column({ length: 100, nullable: true })
   snapshotDepartment: string;
 
-  @Column({ length: 100, nullable: true })
-  snapshotPosition: string;
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  snapshotPosition: string | null;
 
   @Column({ length: 101, nullable: true })
   snapshotManagerName: string; // "First Last" of manager at submission time
@@ -132,7 +132,7 @@ export class TokenRequest {
    * Flexible JSON payload — shape varies by type:
    * task_offloading:  { projectName, projectDescription, ojt? }
    * coaching:         { coachId, coachName }
-   * learning_subsidy: { courseName, provider, amount, tokenCount }
+   * learning_subsidy: { courseName, provider, subsidyAmount, tokenCost }
    */
   @Column({ type: 'jsonb', nullable: true })
   formData: Record<string, unknown>;

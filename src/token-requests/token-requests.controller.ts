@@ -7,12 +7,9 @@ import {
   Param,
   Body,
   Query,
-  UploadedFile,
-  UseInterceptors,
   BadRequestException,
   ParseUUIDPipe,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
 import { TokenRequestsService } from './token-requests.service';
 import { CoachingSessionsService } from './coaching-sessions.service';
 import { CreateTaskOffloadingRequestDto } from './dto/create-task-offloading-request.dto';
@@ -36,25 +33,19 @@ export class TokenRequestsController {
   ) {}
 
   /**
-   * POST /token-requests/upload-attachment
-   * Employee: pre-upload a supporting document to S3 before submitting the request.
-   * Returns { url, key, fileName } to pass as attachmentUrl in the create request body.
-   * Accepts multipart/form-data with field name 'file'.
+   * GET /token-requests/presigned-upload?fileName=x&contentType=y
+   * Returns a pre-signed S3 PUT URL. Browser uploads the file directly to S3,
+   * then passes fileUrl as attachmentUrl when submitting the request.
    */
-  @Post('upload-attachment')
-  @UseInterceptors(FileInterceptor('file'))
-  async uploadAttachment(
-    @UploadedFile() file: Express.Multer.File,
+  @Get('presigned-upload')
+  async getPresignedUploadUrl(
+    @Query('fileName') fileName: string,
+    @Query('contentType') contentType: string,
     @CurrentUser() user: User,
   ) {
-    if (!file) throw new BadRequestException('No file provided');
-    const result = await this.s3Service.uploadPendingAttachment(
-      file.buffer,
-      user.id,
-      file.originalname,
-      file.mimetype,
-    );
-    return { url: result.url, key: result.key, fileName: file.originalname };
+    if (!fileName) throw new BadRequestException('fileName query param is required');
+    if (!contentType) throw new BadRequestException('contentType query param is required');
+    return await this.s3Service.generatePresignedUploadUrl(user.id, fileName, contentType);
   }
 
   /**
@@ -106,12 +97,52 @@ export class TokenRequestsController {
    * GET /token-requests/pending
    * Combined approval queue — returns items from both manager queue and HR queue
    * depending on the current user's roles. Each item includes `queueType: 'manager' | 'hr'`.
-   * Accessible to: approver, hr_approver, admin.
+   * Accessible to: approver, coach, hr_approver, admin.
+   * Coaches see their assigned pending coaching requests.
    */
   @Get('pending')
-  @Roles(UserRole.APPROVER, UserRole.HR_APPROVER as UserRole, UserRole.ADMIN)
+  @Roles(UserRole.APPROVER, UserRole.COACH, UserRole.HR_APPROVER as UserRole, UserRole.ADMIN)
   getApprovalQueue(@CurrentUser() user: User) {
     return this.tokenRequestsService.findApprovalQueue(user);
+  }
+
+  /**
+   * GET /token-requests/my-approvals
+   * Role-aware approval history. Behaviour varies by role:
+   *   approver    → all requests assigned to them as manager (all statuses)
+   *   coach       → coaching requests assigned to them as coach (all statuses)
+   *   hr_approver → all manager_approved (pending their action) + requests they acted on
+   *   admin       → all requests company-wide
+   *
+   * Tab filter (meaning differs per role):
+   *   ?tab=pending  → approver/coach: their pending queue
+   *                   hr_approver: requests awaiting final HR review (manager_approved)
+   *                   admin: pending + manager_approved
+   *   ?tab=approved → approver/coach: manager_approved + approved
+   *                   hr_approver: approved requests they personally approved
+   *                   admin: approved
+   *   ?tab=rejected → approver/coach: rejected + cancelled
+   *                   hr_approver: requests they personally rejected at HR level
+   *                   admin: rejected + cancelled
+   */
+  @Get('my-approvals')
+  @Roles(UserRole.APPROVER, UserRole.COACH, UserRole.HR_APPROVER as UserRole, UserRole.ADMIN)
+  getMyApprovals(
+    @CurrentUser() user: User,
+    @Query('tab') tab?: string,
+  ) {
+    return this.tokenRequestsService.findApprovalHistory(user, tab);
+  }
+
+  /**
+   * GET /token-requests/coaching/my-overview
+   * Coach: get all coaching requests assigned to them (pending/manager_approved/approved),
+   * each with their sessions embedded. Used to power the "My Sessions" page.
+   */
+  @Get('coaching/my-overview')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  getCoachOverview(@CurrentUser() user: User) {
+    return this.coachingSessionsService.findCoachOverview(user.id);
   }
 
   /**
@@ -126,13 +157,21 @@ export class TokenRequestsController {
 
   /**
    * GET /token-requests
-   * Admin: view all requests, optionally filtered by status.
-   * ?status=pending | manager_approved | approved | rejected | cancelled
+   * Admin: view all requests.
+   * Filter by exact status: ?status=pending | manager_approved | approved | rejected | cancelled
+   * Filter by tab group:    ?tab=active | completed | rejected
+   *   active    → pending + manager_approved
+   *   completed → approved
+   *   rejected  → rejected + cancelled
+   * tab takes precedence over status if both are provided.
    */
   @Get()
   @Roles(UserRole.ADMIN)
-  findAll(@Query('status') status?: RequestStatus) {
-    return this.tokenRequestsService.findAll(status);
+  findAll(
+    @Query('status') status?: RequestStatus,
+    @Query('tab') tab?: string,
+  ) {
+    return this.tokenRequestsService.findAll(status, tab);
   }
 
   /**
@@ -145,11 +184,32 @@ export class TokenRequestsController {
   }
 
   /**
+   * GET /token-requests/:id/attachment
+   * Returns a pre-signed S3 download URL (15-minute expiry) for the request's attachment.
+   * Use this to render a download link — do NOT link directly to attachmentUrl (bucket is private).
+   */
+  @Get(':id/attachment')
+  async getAttachmentDownloadUrl(@Param('id', ParseUUIDPipe) id: string) {
+    const request = await this.tokenRequestsService.findOne(id);
+    if (!request.attachmentUrl) {
+      throw new BadRequestException('This request has no attachment');
+    }
+    // Extract the S3 key from the stored full URL.
+    // decodeURIComponent is required because fileUrl stores the key with
+    // percent-encoded segments (e.g. spaces → %20, parens → %28%29).
+    // Without decoding, the key passed to S3 won't match the object that was uploaded.
+    const key = decodeURIComponent(new URL(request.attachmentUrl).pathname.substring(1));
+    const url = await this.s3Service.getPresignedDownloadUrl(key);
+    return { url };
+  }
+
+  /**
    * PATCH /token-requests/:id/manager-approve
-   * Manager: approve a pending request (moves to manager_approved).
+   * Manager approves a pending task-offloading or learning-subsidy request.
+   * Coach approves a pending coaching request (they are stored as managerId).
    */
   @Patch(':id/manager-approve')
-  @Roles(UserRole.APPROVER, UserRole.ADMIN)
+  @Roles(UserRole.APPROVER, UserRole.COACH, UserRole.ADMIN)
   managerApprove(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: User,
@@ -172,10 +232,11 @@ export class TokenRequestsController {
 
   /**
    * PATCH /token-requests/:id/manager-reject
-   * Manager: reject a pending request.
+   * Manager rejects a pending task-offloading or learning-subsidy request.
+   * Coach rejects a pending coaching request.
    */
   @Patch(':id/manager-reject')
-  @Roles(UserRole.APPROVER, UserRole.ADMIN)
+  @Roles(UserRole.APPROVER, UserRole.COACH, UserRole.ADMIN)
   managerReject(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: User,
@@ -247,6 +308,34 @@ export class TokenRequestsController {
     @Body() dto: BookSessionDto,
   ) {
     return this.coachingSessionsService.bookSession(id, user.id, dto);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/confirm
+   * Coach confirms a pending booking request → status becomes scheduled.
+   */
+  @Patch(':id/sessions/:sessionId/confirm')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  confirmSession(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.coachingSessionsService.confirmSession(id, sessionId, user.id);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/decline
+   * Coach declines a pending booking request. Releases the availability slot.
+   */
+  @Patch(':id/sessions/:sessionId/decline')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  declineSession(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.coachingSessionsService.declineSession(id, sessionId, user.id);
   }
 
   /**

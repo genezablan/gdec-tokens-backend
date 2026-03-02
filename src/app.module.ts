@@ -10,6 +10,8 @@ import { DevelopmentOptionsModule } from './development-options/development-opti
 import { TokenBalancesModule } from './token-balances/token-balances.module';
 import { TokenRequestsModule } from './token-requests/token-requests.module';
 import { CoachAvailabilityModule } from './coach-availability/coach-availability.module';
+import { UsersModule } from './users/users.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import { databaseConfig, s3Config, sesConfig } from './config';
@@ -42,6 +44,8 @@ import { databaseConfig, s3Config, sesConfig } from './config';
     TokenBalancesModule,
     TokenRequestsModule,
     CoachAvailabilityModule,
+    UsersModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [

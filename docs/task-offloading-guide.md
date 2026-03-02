@@ -18,10 +18,10 @@
 
 Base URL: `http://localhost:3000/api`
 
-| Method | Endpoint                            | Purpose                             | Auth Required          |
-| ------ | ----------------------------------- | ----------------------------------- | ---------------------- |
-| `POST` | `/token-requests/upload-attachment` | Pre-upload the completed form to S3 | Any authenticated user |
-| `POST` | `/token-requests/task-offloading`   | Submit a Task Offloading request    | Any authenticated user |
+| Method | Endpoint                                                    | Purpose                                               | Auth Required          |
+| ------ | ----------------------------------------------------------- | ----------------------------------------------------- | ---------------------- |
+| `GET`  | `/token-requests/presigned-upload?fileName=x&contentType=y` | Get a pre-signed S3 PUT URL for direct browser upload | Any authenticated user |
+| `POST` | `/token-requests/task-offloading`                           | Submit a Task Offloading request                      | Any authenticated user |
 
 Shared endpoints (cancel, resubmit, approve/reject, view) are in [token-requests-guide.md](./token-requests-guide.md).
 
@@ -34,7 +34,7 @@ Shared endpoints (cancel, resubmit, approve/reject, view) are in [token-requests
 ```typescript
 interface CreateTaskOffloadingRequestDto {
   developmentOptionId: string; // UUID of the task_offloading development option
-  attachmentUrl: string; // Required — S3 URL from POST /upload-attachment
+  attachmentUrl: string; // Required — S3 URL returned by GET /presigned-upload
 }
 ```
 
@@ -87,9 +87,14 @@ The development option object includes `formTemplateUrl`. Direct the employee to
 ### 3. Upload the completed form
 
 ```bash
-curl -X POST http://localhost:3000/api/token-requests/upload-attachment \
-  -H "Authorization: Bearer <TOKEN>" \
-  -F "file=@/path/to/filled-form.docx"
+# Step 1 — get presigned URL
+curl "http://localhost:3000/api/token-requests/presigned-upload?fileName=completed-form.docx&contentType=application%2Fvnd.openxmlformats-officedocument.wordprocessingml.document" \
+  -H "Authorization: Bearer <TOKEN>"
+
+# Step 2 — upload directly to S3 using the returned uploadUrl
+curl -X PUT "<uploadUrl>" \
+  -H "Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document" \
+  --data-binary @/path/to/completed-form.docx
 ```
 
 **Response:**
@@ -154,7 +159,7 @@ Supporting Document  * required
 
 1. Show a **Download Blank Form** button pointing to `developmentOption.formTemplateUrl`.
    The employee must fill this out offline and re-upload it.
-2. On file select → immediately upload via `POST /upload-attachment` and show a spinner.
+2. On file select → immediately fetch `GET /presigned-upload?fileName=...&contentType=...`, then PUT to `uploadUrl`. Show a spinner.
 3. Block the **Submit** button until a file is successfully uploaded.
 4. On submit → `POST /token-requests/task-offloading` with `{ developmentOptionId, attachmentUrl }`.
 5. Check `availableTokens >= 1` before submission; show a warning if not.

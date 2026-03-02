@@ -1,5 +1,5 @@
-import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { NestFactory, Reflector } from '@nestjs/core';
+import { ClassSerializerInterceptor, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
 
@@ -8,9 +8,16 @@ async function bootstrap() {
   const configService = app.get(ConfigService);
 
   // Enable CORS
+  const allowedOrigins = (configService.get<string>('CORS_ORIGINS') || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
   app.enableCors({
-    origin: true, // Configure based on your frontend URL in production
+    origin: allowedOrigins.length > 0 ? allowedOrigins : true,
     credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Last-Event-ID'],
   });
 
   // Global validation pipe
@@ -21,6 +28,9 @@ async function bootstrap() {
       transform: true,
     }),
   );
+
+  // Strip @Exclude() fields (e.g. password) from all serialized responses
+  app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
 
   // Global prefix
   const apiPrefix = configService.get<string>('API_PREFIX') || 'api';
