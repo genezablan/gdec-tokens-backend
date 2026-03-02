@@ -38,7 +38,7 @@ jobs:
             npm run migration:run:prod
 
             echo "==> Reloading app (zero-downtime)..."
-            pm2 reload gdec-tokens-backend-staging --update-env
+            pm2 startOrReload ecosystem.config.js --only gdec-tokens-backend-staging --update-env
 
             echo "==> Staging deploy done."
 
@@ -73,6 +73,6 @@ jobs:
             npm run migration:run:prod
 
             echo "==> Reloading app (zero-downtime)..."
-            pm2 reload gdec-tokens-backend --update-env
+            pm2 startOrReload ecosystem.config.js --only gdec-tokens-backend --update-env
 
             echo "==> Production deploy done."
