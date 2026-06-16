@@ -58,3 +58,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # Employee data files (sensitive)
 *.xlsx
 *.xls
+
+# Private keys (never commit)
+rsa_key.p8
+*.p8

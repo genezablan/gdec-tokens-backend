@@ -111,6 +111,25 @@ export class User {
   @Column({ type: 'varchar', nullable: true, length: 50 })
   nickname: string | null;
 
+  // ─── Coach profile ──────────────────────────────────────────────────────────
+  // Populated for users with the `coach` role; null for everyone else.
+
+  @Column({ type: 'varchar', nullable: true, length: 120 })
+  headline: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  bio: string | null;
+
+  @Column({ type: 'text', array: true, nullable: true })
+  specialties: string[] | null;
+
+  @Column({ type: 'int', nullable: true })
+  yearsExperience: number | null;
+
+  /** Max number of coachees this coach will take on per coaching cycle. */
+  @Column({ type: 'int', nullable: true })
+  maxCoachesPerCycle: number | null;
+
   @Column({ nullable: true, length: 255 })
   @Exclude()
   passwordResetToken: string;

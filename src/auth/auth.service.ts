@@ -12,7 +12,13 @@ import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { User } from '../entities/user.entity';
 import { AuthProvider, EmployeeStatus, UserRole } from '../common/enums';
-import { ChangePasswordDto, ForgotPasswordDto, RegisterDto, ResetPasswordDto } from './dto';
+import {
+  ChangePasswordDto,
+  ForgotPasswordDto,
+  RegisterDto,
+  ResetPasswordDto,
+  UpdateProfileDto,
+} from './dto';
 import { AuthResponse, JwtPayload } from './interfaces/jwt-payload.interface';
 import { EmailService } from '../common/services/email.service';
 import { S3Service } from '../common/services/s3.service';
@@ -379,18 +385,39 @@ export class AuthService {
 
   async updateProfile(
     userId: string,
-    nickname?: string,
-    profilePictureKey?: string,
+    dto: UpdateProfileDto,
   ): Promise<Omit<User, 'password'>> {
     const user = await this.userRepository.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
 
-    if (nickname !== undefined) {
-      user.nickname = nickname.trim() || null;
+    if (dto.nickname !== undefined) {
+      user.nickname = dto.nickname.trim() || null;
     }
 
-    if (profilePictureKey) {
-      user.profilePicture = profilePictureKey;
+    if (dto.profilePictureKey) {
+      user.profilePicture = dto.profilePictureKey;
+    }
+
+    // Coach profile fields — send only what changed; empty string/array clears.
+    if (dto.headline !== undefined) {
+      user.headline = dto.headline.trim() || null;
+    }
+
+    if (dto.bio !== undefined) {
+      user.bio = dto.bio.trim() || null;
+    }
+
+    if (dto.specialties !== undefined) {
+      const cleaned = dto.specialties.map((s) => s.trim()).filter(Boolean);
+      user.specialties = cleaned.length ? cleaned : null;
+    }
+
+    if (dto.yearsExperience !== undefined) {
+      user.yearsExperience = dto.yearsExperience;
+    }
+
+    if (dto.maxCoachesPerCycle !== undefined) {
+      user.maxCoachesPerCycle = dto.maxCoachesPerCycle;
     }
 
     await this.userRepository.save(user);

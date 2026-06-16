@@ -99,7 +99,7 @@ export class AuthController {
     @CurrentUser('id') userId: string,
     @Body() dto: UpdateProfileDto,
   ) {
-    return this.authService.updateProfile(userId, dto.nickname, dto.profilePictureKey);
+    return this.authService.updateProfile(userId, dto);
   }
 
   @Public()
