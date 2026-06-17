@@ -7,6 +7,7 @@ import { PollOption } from '../entities/poll-option.entity';
 import { PollVote } from '../entities/poll-vote.entity';
 import { PostView } from '../entities/post-view.entity';
 import { PostMention } from '../entities/post-mention.entity';
+import { CommentMention } from '../entities/comment-mention.entity';
 import { PostPraised } from '../entities/post-praised.entity';
 import { PostAttachment } from '../entities/post-attachment.entity';
 import { CommunityController } from './community.controller';
@@ -25,6 +26,7 @@ import { CommunitiesModule } from '../communities/communities.module';
       PollVote,
       PostView,
       PostMention,
+      CommentMention,
       PostPraised,
       PostAttachment,
     ]),

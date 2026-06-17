@@ -84,6 +84,7 @@ export class CommunityNotifier {
     postAuthorId: string;
     commenterId: string;
     commenterName: string;
+    mentionedUserIds?: string[];
   }): Promise<void> {
     const { postId, communityId, postAuthorId, commenterId, commenterName } = params;
     const deeplink = `/community/${postId}`;
@@ -96,6 +97,20 @@ export class CommunityNotifier {
           metadata: { deeplink, postId, communityId },
         });
       }
+      // Mention notifications — exclude the commenter and the post author
+      // (who already got the reply notification above) to avoid duplicates.
+      const mentioned = unique(params.mentionedUserIds ?? []).filter(
+        (u) => u !== commenterId && u !== postAuthorId,
+      );
+      await Promise.all(
+        mentioned.map((userId) =>
+          this.persist(userId, {
+            title: 'You were mentioned',
+            message: `${commenterName} mentioned you in a comment`,
+            metadata: { deeplink, postId, communityId },
+          }),
+        ),
+      );
       const members = await this.memberIds(communityId, commenterId);
       this.notifications.pushEventToMany(members, {
         type: 'community.comment.added',
