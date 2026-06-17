@@ -14,6 +14,8 @@ import { UsersModule } from './users/users.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { TutorialsModule } from './tutorials/tutorials.module';
 import { ChatModule } from './chat/chat.module';
+import { CommunitiesModule } from './communities/communities.module';
+import { CommunityModule } from './community/community.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import {
@@ -55,6 +57,8 @@ import {
     NotificationsModule,
     TutorialsModule,
     ChatModule,
+    CommunitiesModule,
+    CommunityModule,
   ],
   controllers: [AppController],
   providers: [

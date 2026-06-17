@@ -61,6 +61,17 @@ export class UsersController {
   }
 
   /**
+   * GET /users/search?q=
+   * People-picker for the Community composer (@mentions / praise).
+   * Returns up to 8 UserBrief { id, name, avatarUrl }.
+   * NOTE: Must be declared BEFORE GET :id to avoid route conflict.
+   */
+  @Get('search')
+  searchUsers(@Query('q') q?: string) {
+    return this.usersService.searchBriefs(q);
+  }
+
+  /**
    * GET /users/:id
    * Get a single user by UUID.
    * Auth: any authenticated user.

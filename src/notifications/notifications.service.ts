@@ -60,6 +60,25 @@ export class NotificationsService {
     );
   }
 
+  // ─── Ephemeral push (no persistence) ─────────────────────────────────────────
+
+  /**
+   * Push a live event to a user's open SSE connections WITHOUT persisting a
+   * notification. Used for real-time UI updates (new post / comment / reaction)
+   * that should not become bell entries. No-op if the user isn't connected.
+   */
+  pushEvent(userId: string, data: Record<string, unknown>): void {
+    const set = this.streams.get(userId);
+    if (!set) return;
+    const event = { data } as MessageEvent;
+    set.forEach((subject) => subject.next(event));
+  }
+
+  /** Push the same live event to many users (deduplicated). */
+  pushEventToMany(userIds: string[], data: Record<string, unknown>): void {
+    for (const userId of new Set(userIds)) this.pushEvent(userId, data);
+  }
+
   // ─── Create ─────────────────────────────────────────────────────────────────
 
   async create(userId: string, dto: CreateNotificationDto): Promise<Notification> {
