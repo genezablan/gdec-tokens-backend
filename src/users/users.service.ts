@@ -79,6 +79,36 @@ export class UsersService {
     return this.safeUser(user);
   }
 
+  /**
+   * People-picker search for the Community composer (@mentions / praise).
+   * Returns up to `limit` active users as UserBrief { id, name, avatarUrl }.
+   * Empty query returns a small suggested set. (docs/community.md §9.1)
+   */
+  async searchBriefs(q?: string, limit = 8) {
+    const qb = this.userRepo
+      .createQueryBuilder('u')
+      .where('u.isActive = true')
+      .orderBy('u.firstName', 'ASC')
+      .addOrderBy('u.lastName', 'ASC')
+      .take(limit);
+
+    if (q?.trim()) {
+      const term = `%${q.trim().toLowerCase()}%`;
+      qb.andWhere(
+        `(LOWER(u.firstName) LIKE :term OR LOWER(u.lastName) LIKE :term
+          OR LOWER(u.firstName || ' ' || u.lastName) LIKE :term)`,
+        { term },
+      );
+    }
+
+    const users = await qb.getMany();
+    return users.map((u) => ({
+      id: u.id,
+      name: u.fullName,
+      avatarUrl: u.profilePicture ?? null,
+    }));
+  }
+
   async updateRoles(id: string, roles: UserRole[]) {
     const user = await this.userRepo.findOne({ where: { id } });
     if (!user) throw new NotFoundException(`User ${id} not found`);
