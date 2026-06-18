@@ -23,6 +23,7 @@ import { CommunityAccessService } from '../communities/community-access.service'
 import { CommunityNotifier } from '../communities/community-notifier.service';
 import { ApiPost, PostMapper } from './post.mapper';
 import { CreatePostDto } from './dto/create-post.dto';
+import { UpdatePostDto } from './dto/update-post.dto';
 import { ReactDto, CreateCommentDto, VoteDto } from './dto/interaction.dto';
 import { FeedQueryDto, FeedScope, FeedSort } from './dto/feed-query.dto';
 
@@ -153,6 +154,104 @@ export class CommunityService {
 
     const reloaded = await this.loadPost(post.id);
     return this.mapper.mapOne(reloaded!, user.id, { fullComments: true });
+  }
+
+  /**
+   * PATCH /community/:id — edit a post. Author only. Type/community/poll options
+   * are immutable; provided text fields are merged, and attachments/mentions/
+   * praisedPeople (when provided) replace the existing sets wholesale.
+   */
+  async updatePost(
+    user: User,
+    id: string,
+    dto: UpdatePostDto,
+  ): Promise<ApiPost> {
+    const post = await this.loadPost(id);
+    if (!post) throw new NotFoundException('Post not found');
+    if (post.authorId !== user.id) {
+      throw new ForbiddenException('You can only edit your own posts');
+    }
+
+    if (dto.title !== undefined) post.title = dto.title?.trim() || null;
+    if (dto.bodyHtml !== undefined) {
+      const bodyHtml = this.sanitizer.sanitize(dto.bodyHtml);
+      post.bodyHtml = bodyHtml || null;
+      post.body = (dto.body?.trim() || this.sanitizer.toPlainText(bodyHtml)) || null;
+    } else if (dto.body !== undefined) {
+      post.body = dto.body?.trim() || null;
+    }
+    if (dto.topics !== undefined) post.topics = dto.topics ?? [];
+    if (post.type === PostType.PRAISE && dto.badge !== undefined) {
+      post.badge = dto.badge ?? null;
+    }
+    if (
+      post.type === PostType.PRAISE &&
+      dto.praisedPeople !== undefined &&
+      dto.praisedPeople.length === 0
+    ) {
+      throw new BadRequestException('Praise requires at least one praised person');
+    }
+
+    this.validateEditedPost(post);
+    await this.postRepo.save(post);
+
+    if (dto.attachments !== undefined) {
+      await this.attachmentRepo.delete({ postId: id });
+      if (dto.attachments.length) {
+        await this.attachmentRepo.save(
+          dto.attachments.map((a, i) =>
+            this.attachmentRepo.create({
+              postId: id,
+              type: a.type,
+              url: a.url,
+              name: a.name ?? null,
+              sortOrder: i,
+            }),
+          ),
+        );
+      }
+    }
+
+    if (dto.mentions !== undefined) {
+      await this.mentionRepo.delete({ postId: id });
+      const unique = [...new Set(dto.mentions)];
+      if (unique.length) {
+        await this.mentionRepo.save(
+          unique.map((userId) => this.mentionRepo.create({ postId: id, userId })),
+        );
+      }
+    }
+
+    if (post.type === PostType.PRAISE && dto.praisedPeople !== undefined) {
+      await this.praisedRepo.delete({ postId: id });
+      const unique = [...new Set(dto.praisedPeople)];
+      if (unique.length) {
+        await this.praisedRepo.save(
+          unique.map((userId) => this.praisedRepo.create({ postId: id, userId })),
+        );
+      }
+    }
+
+    const reloaded = await this.loadPost(id);
+    return this.mapper.mapOne(reloaded!, user.id, { fullComments: true });
+  }
+
+  /**
+   * DELETE /community/:id — remove a post. Allowed for the author or a community/
+   * platform admin. Child rows (comments, reactions, attachments, etc.) cascade.
+   */
+  async deletePost(user: User, id: string): Promise<{ success: true }> {
+    const post = await this.loadPost(id);
+    if (!post) throw new NotFoundException('Post not found');
+    const community = await this.access.getCommunityOrThrow(post.communityId);
+    const isAuthor = post.authorId === user.id;
+    const isAdmin = await this.access.isCommunityAdmin(community, user);
+    if (!isAuthor && !isAdmin) {
+      throw new ForbiddenException('You can only delete your own posts');
+    }
+
+    await this.postRepo.delete(id);
+    return { success: true };
   }
 
   // ─── Interactions ───────────────────────────────────────────────────────────
@@ -492,6 +591,28 @@ export class CommunityService {
           this.pollOptionRepo.create({ postId, label: label.trim(), sortOrder: i }),
         ),
       );
+    }
+  }
+
+  /** Post-edit invariants on the merged post (mirrors validatePostByType). */
+  private validateEditedPost(post: Post): void {
+    const hasBody = !!(post.bodyHtml?.trim() || post.body?.trim());
+    const hasTitle = !!post.title?.trim();
+
+    switch (post.type) {
+      case PostType.DISCUSSION:
+        if (!hasBody) throw new BadRequestException('Discussion requires a body');
+        break;
+      case PostType.QUESTION:
+        if (!hasTitle) throw new BadRequestException('Question requires a title');
+        break;
+      case PostType.PRAISE:
+        if (!hasBody) throw new BadRequestException('Praise requires a body');
+        if (!post.badge) throw new BadRequestException('Praise requires a badge');
+        break;
+      case PostType.POLL:
+        if (!hasTitle) throw new BadRequestException('Poll requires a title');
+        break;
     }
   }
 

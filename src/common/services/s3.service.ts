@@ -93,6 +93,25 @@ export class S3Service {
   }
 
   /**
+   * Extracts the object key from a full virtual-hosted S3 URL pointing at THIS
+   * bucket (the form produced by uploadFile / presigned PUT). Returns null for
+   * URLs that aren't in this bucket (e.g. public Giphy GIFs) so callers can skip
+   * presigning them.
+   */
+  extractObjectKey(url: string | null | undefined): string | null {
+    if (!url) return null;
+    try {
+      const region = this.configService.get<string>('s3.region') || 'ap-southeast-1';
+      const host = `${this.bucketName}.s3.${region}.amazonaws.com`;
+      const parsed = new URL(url);
+      if (parsed.hostname !== host) return null;
+      return decodeURIComponent(parsed.pathname.replace(/^\/+/, '')) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Generates a standardized S3 key for token request attachments
    * @param userId - User ID
    * @param requestId - Request ID
@@ -159,15 +178,18 @@ export class S3Service {
 
   /**
    * Generates a pre-signed PUT URL so the browser can upload directly to S3.
-   * Returns { uploadUrl, fileUrl, key }.
-   * The browser PUTs the file to uploadUrl, then passes fileUrl as attachmentUrl.
-   * Expires in 5 minutes.
+   * Returns { uploadUrl, fileUrl, viewUrl, key }.
+   * The browser PUTs the file to uploadUrl, then passes fileUrl as attachmentUrl
+   * for persistence. viewUrl is a short-lived presigned GET URL the UI can use to
+   * preview the just-uploaded object (the bucket is private, so the raw fileUrl
+   * would 403 until the backend re-presigns it on read).
+   * Upload URL expires in 5 minutes; view URL in 15 minutes.
    */
   async generatePresignedUploadUrl(
     userId: string,
     filename: string,
     contentType: string,
-  ): Promise<{ uploadUrl: string; fileUrl: string; key: string }> {
+  ): Promise<{ uploadUrl: string; fileUrl: string; viewUrl: string; key: string }> {
     const key = `token-request-attachments/${userId}/${uuidv4()}/${filename}`;
     const region = this.configService.get<string>('s3.region') || 'ap-southeast-1';
 
@@ -182,8 +204,9 @@ export class S3Service {
     // Forward slashes (folder separators) are NOT encoded.
     const encodedKey = key.split('/').map(encodeURIComponent).join('/');
     const fileUrl = `https://${this.bucketName}.s3.${region}.amazonaws.com/${encodedKey}`;
+    const viewUrl = await this.getPresignedDownloadUrl(key, 900);
 
-    return { uploadUrl, fileUrl, key };
+    return { uploadUrl, fileUrl, viewUrl, key };
   }
 
   /**

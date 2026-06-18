@@ -299,7 +299,36 @@ export class PostMapper {
     });
 
     await this.resolveAvatarUrls(mapped);
+    await this.resolveAttachmentUrls(mapped);
     return mapped;
+  }
+
+  /**
+   * Attachments are stored as full S3 object URLs on a private bucket, so a raw
+   * GET returns 403. Replace each one with a short-lived (15 min) presigned GET
+   * URL. Non-bucket URLs (e.g. public Giphy GIFs) are left untouched. Keys are
+   * deduped so each object is signed only once per page.
+   */
+  private async resolveAttachmentUrls(posts: ApiPost[]): Promise<void> {
+    const attachments = posts.flatMap((p) => p.attachments ?? []);
+    const keyByAttachment = new Map<ApiAttachment, string>();
+    for (const a of attachments) {
+      const key = this.s3Service.extractObjectKey(a.url);
+      if (key) keyByAttachment.set(a, key);
+    }
+
+    const keys = [...new Set(keyByAttachment.values())];
+    if (keys.length === 0) return;
+
+    const signed = await Promise.all(
+      keys.map((key) => this.s3Service.getPresignedDownloadUrl(key, 900)),
+    );
+    const urlByKey = new Map(keys.map((key, i) => [key, signed[i]]));
+
+    for (const a of attachments) {
+      const key = keyByAttachment.get(a);
+      if (key) a.url = urlByKey.get(key) ?? a.url;
+    }
   }
 
   /**
