@@ -11,6 +11,7 @@ import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { User } from '../entities/user.entity';
+import { LoginEvent } from '../entities/login-event.entity';
 import { AuthProvider, EmployeeStatus, UserRole } from '../common/enums';
 import {
   ChangePasswordDto,
@@ -28,6 +29,8 @@ export class AuthService {
   constructor(
     @InjectRepository(User)
     private userRepository: Repository<User>,
+    @InjectRepository(LoginEvent)
+    private loginEventRepository: Repository<LoginEvent>,
     private jwtService: JwtService,
     private configService: ConfigService,
     private emailService: EmailService,
@@ -68,6 +71,17 @@ export class AuthService {
   }
 
   async login(user: User): Promise<AuthResponse> {
+    // Record the login for engagement analytics (last-login + append-only event log).
+    // Best-effort: a tracking failure must never block a valid login.
+    try {
+      await this.userRepository.update(user.id, { lastLoginAt: new Date() });
+      await this.loginEventRepository.save(
+        this.loginEventRepository.create({ userId: user.id }),
+      );
+    } catch {
+      // swallow — analytics tracking is non-critical
+    }
+
     const payload: JwtPayload = {
       sub: user.id,
       employeeId: user.employeeId,

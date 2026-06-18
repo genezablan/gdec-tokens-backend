@@ -4,6 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from '../entities/user.entity';
+import { LoginEvent } from '../entities/login-event.entity';
 import { CommonModule } from '../common/common.module';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
@@ -15,7 +16,7 @@ import { MicrosoftStrategy } from './strategies/microsoft.strategy';
 @Module({
   imports: [
     CommonModule,
-    TypeOrmModule.forFeature([User]),
+    TypeOrmModule.forFeature([User, LoginEvent]),
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],

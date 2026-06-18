@@ -1,4 +1,26 @@
-import { IsNotEmpty, IsOptional, IsString, Max, Min, IsNumber, IsUUID } from 'class-validator';
+import {
+  IsDateString,
+  IsNotEmpty,
+  IsObject,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+  IsNumber,
+  IsUUID,
+  ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class LearningSubsidyFormDataDto {
+  /** Course/training start date (ISO `YYYY-MM-DD`). */
+  @IsDateString()
+  startDate!: string;
+
+  /** Course/training end date (ISO `YYYY-MM-DD`). */
+  @IsDateString()
+  endDate!: string;
+}
 
 export class CreateLearningSubsidyRequestDto {
   @IsNotEmpty()
@@ -28,4 +50,10 @@ export class CreateLearningSubsidyRequestDto {
   @IsOptional()
   @IsString()
   attachmentUrl?: string;
+
+  /** Form fields captured in the request modal; merged into the request's formData. */
+  @IsObject()
+  @ValidateNested()
+  @Type(() => LearningSubsidyFormDataDto)
+  formData!: LearningSubsidyFormDataDto;
 }

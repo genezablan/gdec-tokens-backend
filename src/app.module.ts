@@ -16,6 +16,7 @@ import { TutorialsModule } from './tutorials/tutorials.module';
 import { ChatModule } from './chat/chat.module';
 import { CommunitiesModule } from './communities/communities.module';
 import { CommunityModule } from './community/community.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import {
@@ -59,6 +60,7 @@ import {
     ChatModule,
     CommunitiesModule,
     CommunityModule,
+    AnalyticsModule,
   ],
   controllers: [AppController],
   providers: [

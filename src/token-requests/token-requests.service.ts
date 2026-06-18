@@ -49,6 +49,16 @@ export class TokenRequestsService {
   }
 
   /**
+   * Validate a task-offloading date range. The frontend enforces this too, but
+   * the backend must be authoritative (direct API calls bypass the UI).
+   */
+  private assertValidDateRange(startDate: string, endDate: string): void {
+    if (new Date(endDate) < new Date(startDate)) {
+      throw new BadRequestException('End date cannot be before start date.');
+    }
+  }
+
+  /**
    * Resolve the manager for an employee.
    * Uses immediateSupervisorId if that user has approver role,
    * otherwise falls back to any admin.
@@ -193,6 +203,8 @@ export class TokenRequestsService {
     employeeId: string,
     dto: CreateTaskOffloadingRequestDto,
   ): Promise<TokenRequest> {
+    this.assertValidDateRange(dto.formData.startDate, dto.formData.endDate);
+
     const { employee, option, year, balance, manager } = await this.prepareRequest(
       employeeId,
       dto.developmentOptionId,
@@ -230,7 +242,7 @@ export class TokenRequestsService {
       managerId: manager.id,
       employee,
       manager,
-      formData: {},
+      formData: { ...dto.formData },
       attachmentUrl: dto.attachmentUrl,
     });
   }
@@ -290,6 +302,7 @@ export class TokenRequestsService {
         coachId: dto.coachId,
         coachName: `${coach.firstName} ${coach.lastName}`,
         notes: dto.notes ?? null,
+        preferredSchedule: dto.formData.preferredSchedule,
       },
       attachmentUrl: dto.attachmentUrl,
     });
@@ -303,6 +316,8 @@ export class TokenRequestsService {
     employeeId: string,
     dto: CreateLearningSubsidyRequestDto,
   ): Promise<TokenRequest> {
+    this.assertValidDateRange(dto.formData.startDate, dto.formData.endDate);
+
     const { employee, option, year, balance, manager } = await this.prepareRequest(
       employeeId,
       dto.developmentOptionId,
@@ -340,6 +355,8 @@ export class TokenRequestsService {
         provider: dto.provider,
         subsidyAmount: dto.subsidyAmount,
         tokenCost,
+        startDate: dto.formData.startDate,
+        endDate: dto.formData.endDate,
       },
       attachmentUrl: dto.attachmentUrl,
     });
@@ -564,9 +581,20 @@ export class TokenRequestsService {
 
     // ── Merge updated fields into formData per type ──
     if (request.type === DevelopmentOptionType.TASK_OFFLOADING) {
-      if (dto.attachmentUrl) {
-        request.attachmentUrl = dto.attachmentUrl;
-      }
+      const formData = { ...(request.formData as Record<string, unknown>) };
+      if (dto.requestSubject !== undefined) formData.requestSubject = dto.requestSubject;
+      if (dto.startDate !== undefined) formData.startDate = dto.startDate;
+      if (dto.endDate !== undefined) formData.endDate = dto.endDate;
+      if (dto.reason !== undefined) formData.reason = dto.reason;
+
+      // Validate the effective range (merging any unchanged dates from the original).
+      this.assertValidDateRange(
+        formData.startDate as string,
+        formData.endDate as string,
+      );
+
+      if (dto.attachmentUrl) request.attachmentUrl = dto.attachmentUrl;
+      request.formData = formData;
     } else if (request.type === DevelopmentOptionType.COACHING) {
       const formData = { ...(request.formData as Record<string, unknown>) };
       if (dto.coachId) {
