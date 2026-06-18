@@ -2,6 +2,8 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
+  Delete,
   Body,
   Param,
   Query,
@@ -11,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { CommunityService } from './community.service';
 import { CreatePostDto } from './dto/create-post.dto';
+import { UpdatePostDto } from './dto/update-post.dto';
 import { ReactDto, CreateCommentDto, VoteDto } from './dto/interaction.dto';
 import { FeedQueryDto } from './dto/feed-query.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -56,6 +59,23 @@ export class CommunityController {
   @Post()
   createPost(@CurrentUser() user: User, @Body() dto: CreatePostDto) {
     return this.communityService.createPost(user, dto);
+  }
+
+  /** PATCH /community/:id — edit a post (author only). */
+  @Patch(':id')
+  updatePost(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdatePostDto,
+  ) {
+    return this.communityService.updatePost(user, id, dto);
+  }
+
+  /** DELETE /community/:id — delete a post (author or admin). */
+  @Delete(':id')
+  @HttpCode(HttpStatus.OK)
+  deletePost(@CurrentUser() user: User, @Param('id', ParseUUIDPipe) id: string) {
+    return this.communityService.deletePost(user, id);
   }
 
   /** POST /community/:id/react */
