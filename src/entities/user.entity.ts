@@ -138,6 +138,10 @@ export class User {
   @Exclude()
   passwordResetExpiry: Date;
 
+  /** Timestamp of the user's most recent successful login. Powers engagement analytics. */
+  @Column({ type: 'timestamptz', nullable: true })
+  lastLoginAt: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

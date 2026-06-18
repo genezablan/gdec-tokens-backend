@@ -13,6 +13,7 @@ import { PollOption } from '../entities/poll-option.entity';
 import { PollVote } from '../entities/poll-vote.entity';
 import { PostView } from '../entities/post-view.entity';
 import { PostMention } from '../entities/post-mention.entity';
+import { CommentMention } from '../entities/comment-mention.entity';
 import { PostPraised } from '../entities/post-praised.entity';
 import { PostAttachment } from '../entities/post-attachment.entity';
 import { User } from '../entities/user.entity';
@@ -57,6 +58,8 @@ export class CommunityService {
     private readonly viewRepo: Repository<PostView>,
     @InjectRepository(PostMention)
     private readonly mentionRepo: Repository<PostMention>,
+    @InjectRepository(CommentMention)
+    private readonly commentMentionRepo: Repository<CommentMention>,
     @InjectRepository(PostPraised)
     private readonly praisedRepo: Repository<PostPraised>,
     @InjectRepository(PostAttachment)
@@ -192,7 +195,7 @@ export class CommunityService {
     if (!post) throw new NotFoundException('Post not found');
     await this.assertPostVisible(post, user);
 
-    await this.commentRepo.save(
+    const comment = await this.commentRepo.save(
       this.commentRepo.create({
         postId: id,
         authorId: user.id, // author from token
@@ -200,12 +203,22 @@ export class CommunityService {
       }),
     );
 
+    const mentionedUserIds = [...new Set(dto.mentions ?? [])];
+    if (mentionedUserIds.length) {
+      await this.commentMentionRepo.save(
+        mentionedUserIds.map((userId) =>
+          this.commentMentionRepo.create({ commentId: comment.id, userId }),
+        ),
+      );
+    }
+
     void this.notifier.commentAdded({
       postId: id,
       communityId: post.communityId,
       postAuthorId: post.authorId,
       commenterId: user.id,
       commenterName: user.fullName,
+      mentionedUserIds,
     });
 
     return this.mapper.mapOne(post, user.id, { fullComments: true });

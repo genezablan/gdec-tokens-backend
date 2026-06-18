@@ -130,9 +130,9 @@ export class TokenRequest {
 
   /**
    * Flexible JSON payload — shape varies by type:
-   * task_offloading:  { projectName, projectDescription, ojt? }
-   * coaching:         { coachId, coachName }
-   * learning_subsidy: { courseName, provider, subsidyAmount, tokenCost }
+   * task_offloading:  { requestSubject, startDate, endDate, reason }
+   * coaching:         { coachId, coachName, notes?, preferredSchedule }
+   * learning_subsidy: { courseName, provider, subsidyAmount, tokenCost, startDate, endDate }
    */
   @Column({ type: 'jsonb', nullable: true })
   formData: Record<string, unknown>;

@@ -1,4 +1,19 @@
-import { IsNotEmpty, IsOptional, IsString, IsUUID } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsObject,
+  IsOptional,
+  IsString,
+  IsUUID,
+  ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class CoachingFormDataDto {
+  /** Free-text preferred schedule for the coaching sessions. */
+  @IsString()
+  @IsNotEmpty()
+  preferredSchedule!: string;
+}
 
 export class CreateCoachingRequestDto {
   @IsNotEmpty()
@@ -19,4 +34,10 @@ export class CreateCoachingRequestDto {
   @IsOptional()
   @IsString()
   attachmentUrl?: string;
+
+  /** Form fields captured in the request modal; merged into the request's formData. */
+  @IsObject()
+  @ValidateNested()
+  @Type(() => CoachingFormDataDto)
+  formData!: CoachingFormDataDto;
 }

@@ -1,11 +1,11 @@
-import { IsNumber, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
+import { IsDateString, IsNumber, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
 
 /**
  * Used for PATCH /token-requests/:id/resubmit
  * Only rejected requests can be resubmitted.
  * Send only the fields relevant to the request type — unrecognised fields are ignored.
  *
- * task_offloading:  { attachmentUrl }
+ * task_offloading:  { requestSubject?, startDate?, endDate?, reason?, attachmentUrl? }
  * coaching:         { coachId?, notes?, attachmentUrl? }
  * learning_subsidy: { subsidyAmount?, courseName?, provider?, attachmentUrl? }
  */
@@ -16,6 +16,26 @@ export class ResubmitTokenRequestDto {
   @IsOptional()
   @IsString()
   attachmentUrl?: string;
+
+  /** Updated request title (task_offloading). */
+  @IsOptional()
+  @IsString()
+  requestSubject?: string;
+
+  /** Updated offloading start date, ISO `YYYY-MM-DD` (task_offloading). */
+  @IsOptional()
+  @IsDateString()
+  startDate?: string;
+
+  /** Updated offloading end date, ISO `YYYY-MM-DD` (task_offloading). */
+  @IsOptional()
+  @IsDateString()
+  endDate?: string;
+
+  /** Updated justification (task_offloading). */
+  @IsOptional()
+  @IsString()
+  reason?: string;
 
   // ── coaching ─────────────────────────────────────────────────────────────────
 

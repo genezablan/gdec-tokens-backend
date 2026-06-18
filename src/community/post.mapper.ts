@@ -7,6 +7,7 @@ import { Reaction } from '../entities/reaction.entity';
 import { PollVote } from '../entities/poll-vote.entity';
 import { PostView } from '../entities/post-view.entity';
 import { PostMention } from '../entities/post-mention.entity';
+import { CommentMention } from '../entities/comment-mention.entity';
 import { PostPraised } from '../entities/post-praised.entity';
 import {
   AttachmentType,
@@ -38,6 +39,7 @@ export interface ApiComment {
   author: UserBrief;
   createdAt: Date;
   text: string;
+  mentions: UserBrief[];
 }
 
 export interface ApiPoll {
@@ -101,6 +103,8 @@ export class PostMapper {
     private readonly viewRepo: Repository<PostView>,
     @InjectRepository(Comment)
     private readonly commentRepo: Repository<Comment>,
+    @InjectRepository(CommentMention)
+    private readonly commentMentionRepo: Repository<CommentMention>,
     private readonly s3Service: S3Service,
   ) {}
 
@@ -207,6 +211,20 @@ export class PostMapper {
       commentCountAgg.map((c) => [c.postId, Number(c.count)]),
     );
 
+    // Comment @mentions, grouped by comment id.
+    const commentMentions = comments.length
+      ? await this.commentMentionRepo.find({
+          where: { commentId: In(comments.map((c) => c.id)) },
+          relations: { user: true },
+        })
+      : [];
+    const mentionsByComment = new Map<string, UserBrief[]>();
+    for (const m of commentMentions) {
+      const list = mentionsByComment.get(m.commentId) ?? [];
+      list.push(toUserBrief(m.user));
+      mentionsByComment.set(m.commentId, list);
+    }
+
     const commentsByPost = new Map<string, ApiComment[]>();
     for (const c of comments) {
       const list = commentsByPost.get(c.postId) ?? [];
@@ -215,6 +233,7 @@ export class PostMapper {
         author: toUserBrief(c.author),
         createdAt: c.createdAt,
         text: c.text,
+        mentions: mentionsByComment.get(c.id) ?? [],
       });
       commentsByPost.set(c.postId, list);
     }
