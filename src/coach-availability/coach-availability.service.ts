@@ -5,21 +5,158 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThanOrEqual } from 'typeorm';
+import { In, Repository, MoreThanOrEqual } from 'typeorm';
 import { CoachAvailability } from '../entities/coach-availability.entity';
+import { CoachingSession } from '../entities/coaching-session.entity';
+import { User } from '../entities/user.entity';
+import { CoachingSessionStatus } from '../common/enums';
 import { CreateAvailabilitySlotDto } from './dto/create-availability-slot.dto';
+import { UpdateCoachingHoursDto } from './dto/update-coaching-hours.dto';
 import { CalendarService } from '../calendar/calendar.service';
 
 /** How far ahead to scan Outlook for conflicts when syncing (days). */
 const SYNC_WINDOW_DAYS = 56;
+/** How far ahead to generate bookable slots from Outlook free time (days). */
+const BOOKING_HORIZON_DAYS = 28;
+
+const pad = (n: number) => String(n).padStart(2, '0');
+const hhmm = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const ymd = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+export interface BookableSlot {
+  id: string;
+  availableDate: string;
+  startTime: string;
+  endTime: string;
+  startDateTime: string;
+  endDateTime: string;
+}
 
 @Injectable()
 export class CoachAvailabilityService {
   constructor(
     @InjectRepository(CoachAvailability)
     private readonly availabilityRepo: Repository<CoachAvailability>,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
+    @InjectRepository(CoachingSession)
+    private readonly sessionRepo: Repository<CoachingSession>,
     private readonly calendarService: CalendarService,
   ) {}
+
+  // ─── Coaching hours (per coach) ────────────────────────────────────────────────
+
+  async getCoachingHours(coachId: string) {
+    const coach = await this.userRepo.findOne({ where: { id: coachId } });
+    if (!coach) throw new NotFoundException('Coach not found');
+    return {
+      coachingDays: coach.coachingDays ?? [],
+      coachingStartTime: coach.coachingStartTime ?? null,
+      coachingEndTime: coach.coachingEndTime ?? null,
+      coachingSessionMinutes: coach.coachingSessionMinutes ?? 60,
+    };
+  }
+
+  async updateCoachingHours(coachId: string, dto: UpdateCoachingHoursDto) {
+    if (dto.coachingStartTime && dto.coachingEndTime && dto.coachingStartTime >= dto.coachingEndTime) {
+      throw new BadRequestException('coachingStartTime must be before coachingEndTime');
+    }
+    const coach = await this.userRepo.findOne({ where: { id: coachId } });
+    if (!coach) throw new NotFoundException('Coach not found');
+
+    if (dto.coachingDays !== undefined) coach.coachingDays = dto.coachingDays;
+    if (dto.coachingStartTime !== undefined) coach.coachingStartTime = dto.coachingStartTime;
+    if (dto.coachingEndTime !== undefined) coach.coachingEndTime = dto.coachingEndTime;
+    if (dto.coachingSessionMinutes !== undefined) coach.coachingSessionMinutes = dto.coachingSessionMinutes;
+    await this.userRepo.save(coach);
+    return this.getCoachingHours(coachId);
+  }
+
+  // ─── Bookable slots (Outlook is the source of truth) ───────────────────────────
+
+  /**
+   * Generate bookable slots for a coach = their coaching-hours grid over the next
+   * BOOKING_HORIZON_DAYS, minus Outlook busy times, minus already-booked sessions.
+   * Returns flags so the UI can explain an empty result.
+   */
+  async getBookableSlots(coachId: string): Promise<{
+    connected: boolean;
+    hasHours: boolean;
+    slots: BookableSlot[];
+  }> {
+    const coach = await this.userRepo.findOne({ where: { id: coachId } });
+    if (!coach) throw new NotFoundException('Coach not found');
+
+    const hasHours =
+      !!coach.coachingDays?.length &&
+      !!coach.coachingStartTime &&
+      !!coach.coachingEndTime &&
+      !!coach.coachingSessionMinutes;
+    const connected = await this.calendarService.isConnected(coachId);
+    if (!hasHours || !connected) return { connected, hasHours, slots: [] };
+
+    const now = new Date();
+    const from = new Date();
+    from.setHours(0, 0, 0, 0);
+    const to = new Date(from.getTime() + BOOKING_HORIZON_DAYS * 86400000);
+
+    const busy = await this.calendarService.getBusyIntervals(coachId, from, to);
+
+    // Active sessions block their time (start → start + session length).
+    const sessions = await this.sessionRepo.find({
+      where: {
+        coachId,
+        status: In([
+          CoachingSessionStatus.SCHEDULED,
+          CoachingSessionStatus.PENDING_COACH_APPROVAL,
+        ]),
+      },
+    });
+    const stepMs = (coach.coachingSessionMinutes as number) * 60000;
+    const booked = sessions.map((s) => ({
+      start: new Date(s.scheduledAt),
+      end: new Date(new Date(s.scheduledAt).getTime() + stepMs),
+    }));
+
+    const [sh, sm] = (coach.coachingStartTime as string).split(':').map(Number);
+    const [eh, em] = (coach.coachingEndTime as string).split(':').map(Number);
+    const days = coach.coachingDays as number[];
+
+    const overlaps = (s: Date, e: Date, list: { start: Date; end: Date }[]) =>
+      list.some((b) => s < b.end && e > b.start);
+
+    const slots: BookableSlot[] = [];
+    for (let i = 0; i < BOOKING_HORIZON_DAYS; i++) {
+      const day = new Date(from.getTime() + i * 86400000);
+      if (!days.includes(day.getDay())) continue;
+
+      const windowEnd = new Date(day);
+      windowEnd.setHours(eh, em, 0, 0);
+      let slotStart = new Date(day);
+      slotStart.setHours(sh, sm, 0, 0);
+
+      while (slotStart.getTime() + stepMs <= windowEnd.getTime() + 1) {
+        const slotEnd = new Date(slotStart.getTime() + stepMs);
+        if (
+          slotStart > now &&
+          !overlaps(slotStart, slotEnd, busy) &&
+          !overlaps(slotStart, slotEnd, booked)
+        ) {
+          slots.push({
+            id: `${ymd(slotStart)}T${hhmm(slotStart)}`,
+            availableDate: ymd(slotStart),
+            startTime: hhmm(slotStart),
+            endTime: hhmm(slotEnd),
+            startDateTime: slotStart.toISOString(),
+            endDateTime: slotEnd.toISOString(),
+          });
+        }
+        slotStart = slotEnd;
+      }
+    }
+
+    return { connected, hasHours, slots };
+  }
 
   /** Coach: add a new available time slot. */
   async addSlot(

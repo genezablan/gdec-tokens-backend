@@ -46,6 +46,16 @@ export class CalendarController {
   }
 
   /**
+   * GET /calendar/busy
+   * The current user's own Outlook busy intervals for the next few weeks
+   * (live, display-only — nothing is stored). Empty if not connected.
+   */
+  @Get('busy')
+  getMyBusy(@CurrentUser() user: User) {
+    return this.calendarService.getMyBusy(user.id);
+  }
+
+  /**
    * DELETE /calendar/disconnect
    * Remove the current coach's stored calendar tokens.
    */

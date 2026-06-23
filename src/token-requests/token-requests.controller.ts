@@ -146,6 +146,16 @@ export class TokenRequestsController {
   }
 
   /**
+   * GET /token-requests/coaching/my-events
+   * Any user: their coaching sessions (as coach OR employee) as dated calendar
+   * events. Powers the navbar calendar popover.
+   */
+  @Get('coaching/my-events')
+  getMyCoachingEvents(@CurrentUser() user: User) {
+    return this.coachingSessionsService.findMyEvents(user.id);
+  }
+
+  /**
    * GET /token-requests/hr-queue
    * @deprecated Use GET /token-requests/pending instead.
    */

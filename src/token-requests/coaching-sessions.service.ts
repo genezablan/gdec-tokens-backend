@@ -182,6 +182,64 @@ export class CoachingSessionsService {
     return results;
   }
 
+  /**
+   * Return the current user's coaching sessions (as coach OR employee) as dated
+   * calendar events. Excludes cancelled/declined. Powers the navbar calendar.
+   */
+  async findMyEvents(userId: string): Promise<
+    {
+      id: string;
+      scheduledAt: Date;
+      status: CoachingSessionStatus;
+      sessionNumber: number;
+      role: 'coach' | 'employee';
+      title: string;
+      counterpartName: string;
+      startTime: string | null;
+      endTime: string | null;
+      teamsJoinUrl: string | null;
+    }[]
+  > {
+    const sessions = await this.sessionRepo.find({
+      where: [{ employeeId: userId }, { coachId: userId }],
+      relations: [
+        'coach',
+        'employee',
+        'availability',
+        'tokenRequest',
+        'tokenRequest.developmentOption',
+      ],
+      order: { scheduledAt: 'ASC' },
+    });
+
+    const hidden: CoachingSessionStatus[] = [
+      CoachingSessionStatus.CANCELLED,
+      CoachingSessionStatus.DECLINED,
+    ];
+
+    return sessions
+      .filter((s) => !hidden.includes(s.status))
+      .map((s) => {
+        const isCoach = s.coachId === userId;
+        const optionName = s.tokenRequest?.developmentOption?.name ?? 'Coaching';
+        const counterpart = isCoach
+          ? (s.employee?.fullName ?? 'Employee')
+          : (s.coach?.fullName ?? 'Coach');
+        return {
+          id: s.id,
+          scheduledAt: s.scheduledAt,
+          status: s.status,
+          sessionNumber: s.sessionNumber,
+          role: isCoach ? ('coach' as const) : ('employee' as const),
+          title: `${optionName} (${counterpart})`,
+          counterpartName: counterpart,
+          startTime: s.availability?.startTime ?? null,
+          endTime: s.availability?.endTime ?? null,
+          teamsJoinUrl: s.teamsJoinUrl ?? null,
+        };
+      });
+  }
+
   // ─── Book a session ───────────────────────────────────────────────────────────
 
   /**
@@ -226,11 +284,50 @@ export class CoachingSessionsService {
       );
     }
 
-    // Validate the availability slot
-    const slot = await this.availabilityRepo.findOne({
-      where: { id: dto.availabilityId },
-    });
-    if (!slot) throw new NotFoundException('Availability slot not found');
+    // Resolve the slot: either an existing manual slot (availabilityId) or an
+    // Outlook-derived time slot (availableDate + startTime + endTime), for which
+    // we create a backing availability row so downstream displays stay unchanged.
+    let slot: CoachAvailability | null;
+    if (dto.availabilityId) {
+      slot = await this.availabilityRepo.findOne({
+        where: { id: dto.availabilityId },
+      });
+      if (!slot) throw new NotFoundException('Availability slot not found');
+    } else if (dto.availableDate && dto.startTime && dto.endTime) {
+      // Guard against double-booking the coach at this exact time.
+      const startAt = new Date(`${dto.availableDate}T${dto.startTime}`);
+      const clash = await this.sessionRepo.findOne({
+        where: {
+          coachId,
+          scheduledAt: startAt,
+          status: Not(
+            In([
+              CoachingSessionStatus.CANCELLED,
+              CoachingSessionStatus.DECLINED,
+              CoachingSessionStatus.NO_SHOW,
+            ]),
+          ),
+        },
+      });
+      if (clash) {
+        throw new BadRequestException('This time slot is no longer available');
+      }
+      slot = await this.availabilityRepo.save(
+        this.availabilityRepo.create({
+          coachId,
+          availableDate: dto.availableDate,
+          startTime: dto.startTime,
+          endTime: dto.endTime,
+          isBooked: false,
+          isActive: true,
+        }),
+      );
+    } else {
+      throw new BadRequestException(
+        'Provide an availabilityId or a time slot (availableDate, startTime, endTime)',
+      );
+    }
+
     if (slot.coachId !== coachId) {
       throw new BadRequestException(
         'The selected slot does not belong to the assigned coach',

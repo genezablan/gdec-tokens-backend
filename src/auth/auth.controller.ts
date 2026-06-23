@@ -22,12 +22,15 @@ import { MicrosoftAuthGuard } from './guards/microsoft-auth.guard';
 import { Public } from './decorators/public.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { User } from '../entities/user.entity';
+import { UserRole } from '../common/enums';
+import { CalendarService } from '../calendar/calendar.service';
 
 @Controller('auth')
 export class AuthController {
   constructor(
     private authService: AuthService,
     private configService: ConfigService,
+    private calendarService: CalendarService,
   ) {}
 
   @Public()
@@ -160,7 +163,7 @@ export class AuthController {
   async microsoftAuthCallback(@Req() req, @Res() res: Response) {
     const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
     try {
-      const { providerId, email, firstName, lastName, accessToken } = req.user;
+      const { providerId, email, firstName, lastName, accessToken, refreshToken } = req.user;
       const user = await this.authService.validateOAuthUser(
         providerId,
         email,
@@ -170,6 +173,18 @@ export class AuthController {
       );
       // Best-effort: pull the Outlook profile photo if the user has none yet.
       await this.authService.syncMicrosoftProfilePicture(user, accessToken);
+      // Auto-connect the coach's Outlook calendar using the login tokens.
+      if (user.roles?.includes(UserRole.COACH)) {
+        try {
+          await this.calendarService.saveLoginConnection(user.id, {
+            accessToken,
+            refreshToken,
+            accountEmail: email,
+          });
+        } catch {
+          // Best-effort — calendar connect must never block sign-in.
+        }
+      }
       const authResponse = await this.authService.login(user);
       const token = authResponse.accessToken;
       return res.redirect(`${frontendUrl}/auth/callback?token=${token}`);

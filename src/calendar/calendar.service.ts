@@ -46,6 +46,7 @@ interface GraphCreatedEvent {
 }
 
 interface GraphCalendarEvent {
+  subject?: string;
   isCancelled?: boolean;
   showAs?: string;
   start?: { dateTime?: string };
@@ -244,6 +245,35 @@ export class CalendarService {
     }
   }
 
+  /**
+   * Connect (or refresh) a user's calendar using tokens obtained during the
+   * Microsoft SSO login flow — no separate consent round-trip needed.
+   * No-op without a refresh token (i.e. offline_access wasn't granted).
+   */
+  async saveLoginConnection(
+    userId: string,
+    params: {
+      accessToken: string;
+      refreshToken?: string;
+      expiresInSec?: number;
+      accountEmail?: string | null;
+    },
+  ): Promise<void> {
+    if (!params.refreshToken) return;
+
+    let conn = await this.connectionRepo.findOne({ where: { userId } });
+    if (!conn) {
+      conn = this.connectionRepo.create({ userId, provider: 'microsoft' });
+    }
+    conn.accessTokenEnc = this.crypto.encrypt(params.accessToken);
+    conn.refreshTokenEnc = this.crypto.encrypt(params.refreshToken);
+    conn.expiresAt = new Date(Date.now() + (params.expiresInSec ?? 3600) * 1000);
+    conn.scopes = CALENDAR_SCOPES.join(' ');
+    conn.accountEmail = params.accountEmail ?? conn.accountEmail ?? null;
+    conn.connectedAt = conn.connectedAt ?? new Date();
+    await this.connectionRepo.save(conn);
+  }
+
   private async graphGet<T>(path: string, accessToken: string): Promise<T> {
     const res = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -335,20 +365,50 @@ export class CalendarService {
   }
 
   /**
+   * The current user's own Outlook busy intervals for the next 4 weeks, as ISO
+   * strings — live and display-only (nothing stored). Empty if not connected or
+   * on any error (best-effort).
+   */
+  async getMyBusy(
+    userId: string,
+  ): Promise<{ start: string; end: string; subject: string | null }[]> {
+    if (!(await this.isConnected(userId))) return [];
+    const from = new Date();
+    from.setHours(0, 0, 0, 0);
+    const to = new Date(from.getTime() + 28 * 86400000);
+    try {
+      // The user is viewing their OWN calendar, so the event subject is fine to
+      // surface back to them.
+      const intervals = await this.getBusyIntervals(userId, from, to, true);
+      return intervals.map((i) => ({
+        start: i.start.toISOString(),
+        end: i.end.toISOString(),
+        subject: i.subject ?? null,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Return the coach's busy intervals (UTC) between two dates, from their Outlook
-   * calendar. Free/cancelled events are excluded.
+   * calendar. Free/cancelled events are excluded. Set `includeSubject` only when
+   * the result is shown back to the calendar's owner.
    */
   async getBusyIntervals(
     coachId: string,
     from: Date,
     to: Date,
-  ): Promise<{ start: Date; end: Date }[]> {
+    includeSubject = false,
+  ): Promise<{ start: Date; end: Date; subject: string | null }[]> {
     const accessToken = await this.getValidAccessToken(coachId);
 
     const params = new URLSearchParams({
       startDateTime: from.toISOString(),
       endDateTime: to.toISOString(),
-      $select: 'start,end,showAs,isCancelled',
+      $select: includeSubject
+        ? 'subject,start,end,showAs,isCancelled'
+        : 'start,end,showAs,isCancelled',
       $top: '200',
       $orderby: 'start/dateTime',
     });
@@ -359,12 +419,14 @@ export class CalendarService {
     );
 
     const events: GraphCalendarEvent[] = data.value ?? [];
-    const intervals: { start: Date; end: Date }[] = [];
+    const intervals: { start: Date; end: Date; subject: string | null }[] = [];
     for (const e of events) {
       if (e.isCancelled || e.showAs === 'free') continue;
       const start = parseGraphUtc(e.start?.dateTime);
       const end = parseGraphUtc(e.end?.dateTime);
-      if (start && end) intervals.push({ start, end });
+      if (start && end) {
+        intervals.push({ start, end, subject: includeSubject ? (e.subject ?? null) : null });
+      }
     }
     return intervals;
   }
