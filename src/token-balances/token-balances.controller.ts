@@ -80,6 +80,31 @@ export class TokenBalancesController {
   }
 
   /**
+   * GET /token-balances/export
+   * Admin: download all employee token balances for a year as CSV.
+   *
+   * NOTE: This static route MUST be declared before the parametric
+   * `:userId` routes below. NestJS matches routes in declaration order,
+   * so if `:userId` comes first, `/export` is captured as a userId and
+   * rejected by ParseUUIDPipe (400), breaking the CSV download.
+   */
+  @Get('export')
+  @Roles(UserRole.ADMIN)
+  async exportCsv(
+    @Query('year', new ParseIntPipe({ optional: true })) year: number | undefined,
+    @Res() res: Response,
+  ) {
+    const targetYear = year ?? new Date().getFullYear();
+    const csv = await this.tokenBalancesService.exportCsvForYear(targetYear);
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="token-balances-${targetYear}.csv"`,
+    );
+    res.send(csv);
+  }
+
+  /**
    * GET /token-balances/:userId
    * Admin/Approver: a specific employee's balance for the current year.
    */
@@ -119,26 +144,6 @@ export class TokenBalancesController {
       year ?? new Date().getFullYear(),
       dto.boostTokens,
     );
-  }
-
-  /**
-   * GET /token-balances/export
-   * Admin: download all employee token balances for a year as CSV.
-   */
-  @Get('export')
-  @Roles(UserRole.ADMIN)
-  async exportCsv(
-    @Query('year', new ParseIntPipe({ optional: true })) year: number | undefined,
-    @Res() res: Response,
-  ) {
-    const targetYear = year ?? new Date().getFullYear();
-    const csv = await this.tokenBalancesService.exportCsvForYear(targetYear);
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="token-balances-${targetYear}.csv"`,
-    );
-    res.send(csv);
   }
 
   /**

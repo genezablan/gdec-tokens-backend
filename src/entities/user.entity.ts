@@ -130,6 +130,26 @@ export class User {
   @Column({ type: 'int', nullable: true })
   maxCoachesPerCycle: number | null;
 
+  // ─── Coaching availability (Outlook is the source of truth for free time) ──────
+  // Bookable slots are generated from this window minus the coach's Outlook busy
+  // times. Null until the coach configures their coaching hours.
+
+  /** Days of week the coach offers coaching (0=Sun … 6=Sat). */
+  @Column({ type: 'int', array: true, nullable: true })
+  coachingDays: number[] | null;
+
+  /** Daily coaching window start, "HH:MM". */
+  @Column({ type: 'time', nullable: true })
+  coachingStartTime: string | null;
+
+  /** Daily coaching window end, "HH:MM". */
+  @Column({ type: 'time', nullable: true })
+  coachingEndTime: string | null;
+
+  /** Length of one coaching session in minutes (slot granularity). */
+  @Column({ type: 'int', nullable: true })
+  coachingSessionMinutes: number | null;
+
   @Column({ nullable: true, length: 255 })
   @Exclude()
   passwordResetToken: string;

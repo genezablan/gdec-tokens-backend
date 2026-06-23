@@ -82,6 +82,20 @@ export class CoachingSession {
   @Column({ type: 'text', nullable: true })
   sessionNotes: string | null;
 
+  // ─── Calendar sync (Outlook / Microsoft Graph) ─────────────────────────────────
+
+  /** Microsoft Graph event id, set when the session is pushed to the coach's calendar. */
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  graphEventId: string | null;
+
+  /** Teams meeting join URL for the synced calendar event. */
+  @Column({ type: 'text', nullable: true })
+  teamsJoinUrl: string | null;
+
+  /** 'synced' | 'failed' | null — outcome of the last calendar push attempt. */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  calendarSyncStatus: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

@@ -5,6 +5,7 @@ import { CommunityMember } from '../entities/community-member.entity';
 import { CommunityRequest } from '../entities/community-request.entity';
 import { CommunityResource } from '../entities/community-resource.entity';
 import { Post } from '../entities/post.entity';
+import { User } from '../entities/user.entity';
 import { CommunitiesController } from './communities.controller';
 import { CommunitiesService } from './communities.service';
 import { CommunityAccessService } from './community-access.service';
@@ -20,6 +21,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
       CommunityRequest,
       CommunityResource,
       Post,
+      User,
     ]),
     NotificationsModule,
   ],

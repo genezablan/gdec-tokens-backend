@@ -11,13 +11,21 @@ import { TokenRequestsController } from './token-requests.controller';
 import { TokenBalancesModule } from '../token-balances/token-balances.module';
 import { CommonModule } from '../common/common.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { CalendarModule } from '../calendar/calendar.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([TokenRequest, User, DevelopmentOption, CoachingSession, CoachAvailability]),
+    TypeOrmModule.forFeature([
+      TokenRequest,
+      User,
+      DevelopmentOption,
+      CoachingSession,
+      CoachAvailability,
+    ]),
     TokenBalancesModule,
     CommonModule, // provides S3Service
     NotificationsModule,
+    CalendarModule, // provides CalendarService (Outlook push sync)
   ],
   controllers: [TokenRequestsController],
   providers: [TokenRequestsService, CoachingSessionsService],

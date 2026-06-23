@@ -6,6 +6,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from '../entities/user.entity';
 import { LoginEvent } from '../entities/login-event.entity';
 import { CommonModule } from '../common/common.module';
+import { CalendarModule } from '../calendar/calendar.module';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
@@ -16,6 +17,7 @@ import { MicrosoftStrategy } from './strategies/microsoft.strategy';
 @Module({
   imports: [
     CommonModule,
+    CalendarModule, // provides CalendarService for auto-connect at SSO login
     TypeOrmModule.forFeature([User, LoginEvent]),
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({

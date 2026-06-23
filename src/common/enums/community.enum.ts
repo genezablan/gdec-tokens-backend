@@ -10,6 +10,16 @@ export enum PostType {
   POLL = 'poll',
 }
 
+/**
+ * Moderation status of a post. New posts start PENDING and only become visible
+ * in the public feed once an admin APPROVES them (docs/community.md — moderation).
+ */
+export enum PostStatus {
+  PENDING = 'pending',
+  APPROVED = 'approved',
+  REJECTED = 'rejected',
+}
+
 export enum ReactionType {
   LIKE = 'like',
   HEART = 'heart',

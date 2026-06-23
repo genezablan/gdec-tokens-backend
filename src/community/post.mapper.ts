@@ -12,6 +12,7 @@ import { PostPraised } from '../entities/post-praised.entity';
 import {
   AttachmentType,
   CommunityPrivacy,
+  PostStatus,
   PostType,
   PraiseBadge,
   ReactionType,
@@ -51,6 +52,7 @@ export interface ApiPoll {
 export interface ApiPost {
   id: string;
   type: PostType;
+  status: PostStatus;
   communityId: string;
   community: ApiCommunityBrief;
   author: UserBrief;
@@ -251,6 +253,7 @@ export class PostMapper {
       const base: ApiPost = {
         id: post.id,
         type: post.type,
+        status: post.status,
         communityId: post.communityId,
         community: {
           id: post.community.id,

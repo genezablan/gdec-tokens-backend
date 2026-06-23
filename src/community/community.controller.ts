@@ -16,13 +16,17 @@ import { CreatePostDto } from './dto/create-post.dto';
 import { UpdatePostDto } from './dto/update-post.dto';
 import { ReactDto, CreateCommentDto, VoteDto } from './dto/interaction.dto';
 import { FeedQueryDto } from './dto/feed-query.dto';
+import { ModerationQueryDto } from './dto/moderation-query.dto';
+import { UpdatePostStatusDto } from './dto/update-post-status.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { Roles } from '../auth/decorators/roles.decorator';
 import { User } from '../entities/user.entity';
 import {
   PostType,
   ReactionType,
   PraiseBadge,
   ResourceType,
+  UserRole,
 } from '../common/enums';
 
 @Controller('community')
@@ -49,6 +53,19 @@ export class CommunityController {
     };
   }
 
+  /**
+   * GET /community/moderation — admin post-approval queue (all communities,
+   * optionally filtered by status). Declared BEFORE GET :id to avoid a conflict.
+   */
+  @Get('moderation')
+  @Roles(UserRole.ADMIN)
+  getModerationFeed(
+    @CurrentUser() user: User,
+    @Query() query: ModerationQueryDto,
+  ) {
+    return this.communityService.getModerationFeed(user, query);
+  }
+
   /** GET /community/:id — a single post with all comments. */
   @Get(':id')
   getPost(@CurrentUser() user: User, @Param('id', ParseUUIDPipe) id: string) {
@@ -69,6 +86,17 @@ export class CommunityController {
     @Body() dto: UpdatePostDto,
   ) {
     return this.communityService.updatePost(user, id, dto);
+  }
+
+  /** PATCH /community/:id/status — admin approves / rejects a post. */
+  @Patch(':id/status')
+  @Roles(UserRole.ADMIN)
+  setPostStatus(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdatePostStatusDto,
+  ) {
+    return this.communityService.setPostStatus(user, id, dto.status);
   }
 
   /** DELETE /community/:id — delete a post (author or admin). */

@@ -207,6 +207,40 @@ export class AuthService {
     return user;
   }
 
+  /**
+   * Sync the user's profile photo from Microsoft Graph on SSO login.
+   * Best-effort: only runs when the user has no picture set (won't overwrite a
+   * custom upload), and never blocks login on failure.
+   */
+  async syncMicrosoftProfilePicture(
+    user: User,
+    accessToken?: string,
+  ): Promise<void> {
+    if (!accessToken || user.profilePicture) return;
+
+    try {
+      const res = await fetch(
+        'https://graph.microsoft.com/v1.0/me/photo/$value',
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+      // 404 = the account has no photo; anything non-OK → skip silently.
+      if (!res.ok) return;
+
+      const contentType = res.headers.get('content-type') || 'image/jpeg';
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (buffer.length === 0) return;
+
+      const ext = contentType.includes('png') ? 'png' : 'jpg';
+      const key = `profile-pictures/${user.id}/${user.id}-${Date.now()}.${ext}`;
+      await this.s3Service.uploadFile(buffer, key, { contentType });
+
+      user.profilePicture = key;
+      await this.userRepository.save(user);
+    } catch {
+      // Best-effort — a photo sync failure must never break sign-in.
+    }
+  }
+
   async refreshToken(refreshToken: string): Promise<{ accessToken: string }> {
     try {
       const payload = this.jwtService.verify(refreshToken);
