@@ -160,7 +160,7 @@ export class AuthController {
   async microsoftAuthCallback(@Req() req, @Res() res: Response) {
     const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
     try {
-      const { providerId, email, firstName, lastName } = req.user;
+      const { providerId, email, firstName, lastName, accessToken } = req.user;
       const user = await this.authService.validateOAuthUser(
         providerId,
         email,
@@ -168,6 +168,8 @@ export class AuthController {
         firstName,
         lastName,
       );
+      // Best-effort: pull the Outlook profile photo if the user has none yet.
+      await this.authService.syncMicrosoftProfilePicture(user, accessToken);
       const authResponse = await this.authService.login(user);
       const token = authResponse.accessToken;
       return res.redirect(`${frontendUrl}/auth/callback?token=${token}`);

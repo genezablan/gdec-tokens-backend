@@ -29,6 +29,8 @@ export class MicrosoftStrategy extends PassportStrategy(Strategy, 'microsoft') {
       firstName: name?.givenName || profile.givenName,
       lastName: name?.familyName || profile.surname,
       provider: 'microsoft',
+      // Short-lived Graph token — used once to sync the profile photo on login.
+      accessToken,
     };
 
     done(null, user);
