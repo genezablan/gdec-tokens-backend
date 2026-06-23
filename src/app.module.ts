@@ -10,6 +10,7 @@ import { DevelopmentOptionsModule } from './development-options/development-opti
 import { TokenBalancesModule } from './token-balances/token-balances.module';
 import { TokenRequestsModule } from './token-requests/token-requests.module';
 import { CoachAvailabilityModule } from './coach-availability/coach-availability.module';
+import { CalendarModule } from './calendar/calendar.module';
 import { UsersModule } from './users/users.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { TutorialsModule } from './tutorials/tutorials.module';
@@ -17,14 +18,10 @@ import { ChatModule } from './chat/chat.module';
 import { CommunitiesModule } from './communities/communities.module';
 import { CommunityModule } from './community/community.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { AnnouncementsModule } from './announcements/announcements.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
-import {
-  databaseConfig,
-  s3Config,
-  sesConfig,
-  anthropicConfig,
-} from './config';
+import { databaseConfig, s3Config, sesConfig, anthropicConfig } from './config';
 
 @Module({
   imports: [
@@ -54,6 +51,7 @@ import {
     TokenBalancesModule,
     TokenRequestsModule,
     CoachAvailabilityModule,
+    CalendarModule,
     UsersModule,
     NotificationsModule,
     TutorialsModule,
@@ -61,6 +59,7 @@ import {
     CommunitiesModule,
     CommunityModule,
     AnalyticsModule,
+    AnnouncementsModule,
   ],
   controllers: [AppController],
   providers: [

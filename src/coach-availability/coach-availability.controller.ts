@@ -40,6 +40,17 @@ export class CoachAvailabilityController {
   }
 
   /**
+   * POST /coach-availability/sync-outlook
+   * Pull busy times from the coach's Outlook calendar and deactivate any
+   * conflicting unbooked slots.
+   */
+  @Post('sync-outlook')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  syncOutlook(@CurrentUser() user: User) {
+    return this.service.syncWithOutlook(user.id);
+  }
+
+  /**
    * GET /coach-availability/:coachId
    * Any authenticated user can view a coach's available (unbooked, active) slots.
    * Used by employees when viewing a coach's schedule.
