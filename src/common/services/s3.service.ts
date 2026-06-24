@@ -112,6 +112,30 @@ export class S3Service {
   }
 
   /**
+   * Resolve stored avatar values (S3 object keys) to short-lived presigned GET
+   * URLs, in place. Values already http(s) (e.g. external URLs) are left as-is.
+   * Keys are deduped so each object is signed once. Mutates each item's
+   * `avatarUrl`. Mirrors the post mapper's avatar resolution for reuse outside
+   * the feed (members, profiles, reactors).
+   */
+  async presignAvatars<T extends { avatarUrl: string | null }>(
+    items: T[],
+  ): Promise<void> {
+    const needs = (u: string | null): u is string => !!u && !u.startsWith('http');
+    const keys = [...new Set(items.map((i) => i.avatarUrl).filter(needs))];
+    if (keys.length === 0) return;
+    const signed = await Promise.all(
+      keys.map((key) => this.getPresignedDownloadUrl(key, 900)),
+    );
+    const urlByKey = new Map(keys.map((key, i) => [key, signed[i]]));
+    for (const item of items) {
+      if (needs(item.avatarUrl)) {
+        item.avatarUrl = urlByKey.get(item.avatarUrl) ?? item.avatarUrl;
+      }
+    }
+  }
+
+  /**
    * Generates a standardized S3 key for token request attachments
    * @param userId - User ID
    * @param requestId - Request ID

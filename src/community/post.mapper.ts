@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { Post } from '../entities/post.entity';
 import { Comment } from '../entities/comment.entity';
+import { CommentReaction } from '../entities/comment-reaction.entity';
 import { Reaction } from '../entities/reaction.entity';
 import { PollVote } from '../entities/poll-vote.entity';
 import { PostView } from '../entities/post-view.entity';
@@ -15,7 +16,6 @@ import {
   PostStatus,
   PostType,
   PraiseBadge,
-  ReactionType,
 } from '../common/enums';
 import { toUserBrief, UserBrief } from '../common/mappers/user-brief.mapper';
 import { S3Service } from '../common/services/s3.service';
@@ -39,8 +39,20 @@ export interface ApiComment {
   id: string;
   author: UserBrief;
   createdAt: Date;
-  text: string;
+  text: string | null;
+  gifUrl: string | null;
   mentions: UserBrief[];
+  /** Reaction value → count (emoji grapheme or "gif:<id>"). */
+  reactionCounts: Record<string, number>;
+  /** The caller's own reaction value, if any. */
+  myReaction: string | null;
+}
+
+/** A single reactor row for the "Reactions" dialog. */
+export interface ApiReactor extends UserBrief {
+  jobTitle: string | null;
+  /** The reaction value (emoji grapheme). */
+  value: string;
 }
 
 export interface ApiPoll {
@@ -67,8 +79,10 @@ export interface ApiPost {
   praisedPeople?: UserBrief[];
   poll: ApiPoll | null;
   seenBy: number;
-  reactionCounts: Partial<Record<ReactionType, number>>;
-  myReaction: ReactionType | null;
+  /** Reaction value → count (emoji grapheme or "gif:<id>"). */
+  reactionCounts: Record<string, number>;
+  /** The caller's own reaction value, if any. */
+  myReaction: string | null;
   pinned: boolean;
   comments: ApiComment[];
   commentsCount: number;
@@ -107,6 +121,8 @@ export class PostMapper {
     private readonly commentRepo: Repository<Comment>,
     @InjectRepository(CommentMention)
     private readonly commentMentionRepo: Repository<CommentMention>,
+    @InjectRepository(CommentReaction)
+    private readonly commentReactionRepo: Repository<CommentReaction>,
     private readonly s3Service: S3Service,
   ) {}
 
@@ -156,7 +172,7 @@ export class PostMapper {
         .where('r.postId IN (:...ids)', { ids })
         .groupBy('r.postId')
         .addGroupBy('r.type')
-        .getRawMany<{ postId: string; type: ReactionType; count: string }>(),
+        .getRawMany<{ postId: string; type: string; count: string }>(),
       this.reactionRepo.find({ where: { postId: In(ids), userId } }),
       this.voteRepo
         .createQueryBuilder('v')
@@ -192,10 +208,7 @@ export class PostMapper {
     const mentionsByPost = this.groupBriefs(mentions);
     const praisedByPost = this.groupBriefs(praised);
 
-    const reactionCountsByPost = new Map<
-      string,
-      Partial<Record<ReactionType, number>>
-    >();
+    const reactionCountsByPost = new Map<string, Record<string, number>>();
     for (const row of reactionAgg) {
       const counts = reactionCountsByPost.get(row.postId) ?? {};
       counts[row.type] = Number(row.count);
@@ -213,19 +226,44 @@ export class PostMapper {
       commentCountAgg.map((c) => [c.postId, Number(c.count)]),
     );
 
-    // Comment @mentions, grouped by comment id.
-    const commentMentions = comments.length
-      ? await this.commentMentionRepo.find({
-          where: { commentId: In(comments.map((c) => c.id)) },
-          relations: { user: true },
-        })
-      : [];
+    // Comment @mentions + reactions, both keyed by comment id.
+    const commentIds = comments.map((c) => c.id);
+    const [commentMentions, commentReactionAgg, myCommentReactions] =
+      commentIds.length
+        ? await Promise.all([
+            this.commentMentionRepo.find({
+              where: { commentId: In(commentIds) },
+              relations: { user: true },
+            }),
+            this.commentReactionRepo
+              .createQueryBuilder('cr')
+              .select('cr.commentId', 'commentId')
+              .addSelect('cr.value', 'value')
+              .addSelect('COUNT(*)', 'count')
+              .where('cr.commentId IN (:...commentIds)', { commentIds })
+              .groupBy('cr.commentId')
+              .addGroupBy('cr.value')
+              .getRawMany<{ commentId: string; value: string; count: string }>(),
+            this.commentReactionRepo.find({
+              where: { commentId: In(commentIds), userId },
+            }),
+          ])
+        : [[], [], []];
     const mentionsByComment = new Map<string, UserBrief[]>();
     for (const m of commentMentions) {
       const list = mentionsByComment.get(m.commentId) ?? [];
       list.push(toUserBrief(m.user));
       mentionsByComment.set(m.commentId, list);
     }
+    const reactionCountsByComment = new Map<string, Record<string, number>>();
+    for (const row of commentReactionAgg) {
+      const counts = reactionCountsByComment.get(row.commentId) ?? {};
+      counts[row.value] = Number(row.count);
+      reactionCountsByComment.set(row.commentId, counts);
+    }
+    const myReactionByComment = new Map(
+      myCommentReactions.map((r) => [r.commentId, r.value]),
+    );
 
     const commentsByPost = new Map<string, ApiComment[]>();
     for (const c of comments) {
@@ -235,7 +273,10 @@ export class PostMapper {
         author: toUserBrief(c.author),
         createdAt: c.createdAt,
         text: c.text,
+        gifUrl: c.gifUrl,
         mentions: mentionsByComment.get(c.id) ?? [],
+        reactionCounts: reactionCountsByComment.get(c.id) ?? {},
+        myReaction: myReactionByComment.get(c.id) ?? null,
       });
       commentsByPost.set(c.postId, list);
     }

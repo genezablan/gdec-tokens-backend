@@ -23,7 +23,6 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { User } from '../entities/user.entity';
 import {
   PostType,
-  ReactionType,
   PraiseBadge,
   ResourceType,
   UserRole,
@@ -47,7 +46,6 @@ export class CommunityController {
   getMeta() {
     return {
       postTypes: Object.values(PostType),
-      reactions: Object.values(ReactionType),
       badges: Object.values(PraiseBadge),
       resourceTypes: Object.values(ResourceType),
     };
@@ -117,6 +115,15 @@ export class CommunityController {
     return this.communityService.react(user, id, dto);
   }
 
+  /** GET /community/:id/reactions — list everyone who reacted (with their reaction). */
+  @Get(':id/reactions')
+  listReactors(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.communityService.listReactors(user, id);
+  }
+
   /** POST /community/:id/comments */
   @Post(':id/comments')
   addComment(
@@ -125,6 +132,28 @@ export class CommunityController {
     @Body() dto: CreateCommentDto,
   ) {
     return this.communityService.addComment(user, id, dto);
+  }
+
+  /** GET /community/:id/comments/:commentId/reactions — list a comment's reactors. */
+  @Get(':id/comments/:commentId/reactions')
+  listCommentReactors(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('commentId', ParseUUIDPipe) commentId: string,
+  ) {
+    return this.communityService.listCommentReactors(user, id, commentId);
+  }
+
+  /** POST /community/:id/comments/:commentId/react — toggle the caller's reaction. */
+  @Post(':id/comments/:commentId/react')
+  @HttpCode(HttpStatus.OK)
+  reactToComment(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('commentId', ParseUUIDPipe) commentId: string,
+    @Body() dto: ReactDto,
+  ) {
+    return this.communityService.reactToComment(user, id, commentId, dto.type);
   }
 
   /** POST /community/:id/vote */

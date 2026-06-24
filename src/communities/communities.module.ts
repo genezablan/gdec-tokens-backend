@@ -12,6 +12,7 @@ import { CommunityAccessService } from './community-access.service';
 import { CommunityMapper } from './community.mapper';
 import { CommunityNotifier } from './community-notifier.service';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { CommonModule } from '../common/common.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
       User,
     ]),
     NotificationsModule,
+    CommonModule,
   ],
   controllers: [CommunitiesController],
   providers: [

@@ -36,6 +36,10 @@ export class CommunityMember {
   @Column({ type: 'enum', enum: CommunityRole, default: CommunityRole.MEMBER })
   role: CommunityRole;
 
+  /** Designated by a community admin — surfaced in the "Community experts" panel. */
+  @Column({ default: false })
+  expert: boolean;
+
   @CreateDateColumn({ type: 'timestamptz' })
   joinedAt: Date;
 }

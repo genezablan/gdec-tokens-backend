@@ -3,10 +3,27 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { ArrayContains, Repository } from 'typeorm';
 import { User } from '../entities/user.entity';
 import { TokenBalance } from '../entities/token-balance.entity';
-import { UserRole } from '../common/enums';
+import { UserFollow } from '../entities/user-follow.entity';
+import { Post } from '../entities/post.entity';
+import { PostStatus, UserRole } from '../common/enums';
 import { EmailService } from '../common/services/email.service';
+import { S3Service } from '../common/services/s3.service';
 
 const TOKENS_PER_YEAR = 6;
+
+/** Public profile shape consumed by the member profile page. */
+export interface ApiUserProfile {
+  id: string;
+  name: string;
+  avatarUrl: string | null;
+  jobTitle: string | null;
+  department: string | null;
+  postsCount: number;
+  followersCount: number;
+  followingCount: number;
+  isFollowing: boolean;
+  isSelf: boolean;
+}
 
 @Injectable()
 export class UsersService {
@@ -15,8 +32,71 @@ export class UsersService {
     private readonly userRepo: Repository<User>,
     @InjectRepository(TokenBalance)
     private readonly tokenBalanceRepo: Repository<TokenBalance>,
+    @InjectRepository(UserFollow)
+    private readonly followRepo: Repository<UserFollow>,
+    @InjectRepository(Post)
+    private readonly postRepo: Repository<Post>,
     private readonly emailService: EmailService,
+    private readonly s3Service: S3Service,
   ) {}
+
+  /**
+   * GET /users/:id/profile — public profile + per-viewer follow state. Available
+   * to any authenticated user (unlike the admin-oriented findOne).
+   */
+  async getProfile(viewerId: string, targetId: string): Promise<ApiUserProfile> {
+    const user = await this.userRepo.findOne({ where: { id: targetId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    const [postsCount, followersCount, followingCount, mine] = await Promise.all([
+      this.postRepo.count({ where: { authorId: targetId, status: PostStatus.APPROVED } }),
+      this.followRepo.count({ where: { followingId: targetId } }),
+      this.followRepo.count({ where: { followerId: targetId } }),
+      this.followRepo.findOne({ where: { followerId: viewerId, followingId: targetId } }),
+    ]);
+
+    const profile: ApiUserProfile = {
+      id: user.id,
+      name: user.fullName,
+      avatarUrl: user.profilePicture ?? null,
+      jobTitle: user.position ?? null,
+      department: user.department ?? null,
+      postsCount,
+      followersCount,
+      followingCount,
+      isFollowing: !!mine,
+      isSelf: viewerId === targetId,
+    };
+    await this.s3Service.presignAvatars([profile]);
+    return profile;
+  }
+
+  /**
+   * POST /users/:id/follow — toggle the viewer's follow of the target.
+   * Returns the new follow state + follower count. Self-follow is rejected.
+   */
+  async toggleFollow(
+    followerId: string,
+    targetId: string,
+  ): Promise<{ isFollowing: boolean; followersCount: number }> {
+    if (followerId === targetId) {
+      throw new BadRequestException('You cannot follow yourself');
+    }
+    const target = await this.userRepo.findOne({ where: { id: targetId } });
+    if (!target) throw new NotFoundException('User not found');
+
+    const existing = await this.followRepo.findOne({
+      where: { followerId, followingId: targetId },
+    });
+    if (existing) {
+      await this.followRepo.delete({ followerId, followingId: targetId });
+    } else {
+      await this.followRepo.save(this.followRepo.create({ followerId, followingId: targetId }));
+    }
+
+    const followersCount = await this.followRepo.count({ where: { followingId: targetId } });
+    return { isFollowing: !existing, followersCount };
+  }
 
   private safeUser(user: User) {
     return {

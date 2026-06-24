@@ -29,6 +29,11 @@ export class FeedQueryDto {
   @IsString()
   communityId?: string;
 
+  /** Restrict the feed to a single author (member storyline). */
+  @IsOptional()
+  @IsString()
+  authorId?: string;
+
   /** Post type filter, or 'all'. */
   @IsOptional()
   @IsString()

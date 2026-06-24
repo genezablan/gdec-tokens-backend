@@ -1,15 +1,20 @@
 import {
   Controller,
   Get,
+  Post,
   Patch,
   Param,
   Query,
   Body,
+  HttpCode,
+  HttpStatus,
   ParseUUIDPipe,
   BadRequestException,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { User } from '../entities/user.entity';
 import { UserRole } from '../common/enums';
 
 @Controller('users')
@@ -79,6 +84,31 @@ export class UsersController {
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.usersService.findOne(id);
+  }
+
+  /**
+   * GET /users/:id/profile — public profile + per-viewer follow state.
+   * Auth: any authenticated user.
+   */
+  @Get(':id/profile')
+  getProfile(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.usersService.getProfile(user.id, id);
+  }
+
+  /**
+   * POST /users/:id/follow — toggle the caller's follow of the target user.
+   * Auth: any authenticated user.
+   */
+  @Post(':id/follow')
+  @HttpCode(HttpStatus.OK)
+  toggleFollow(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.usersService.toggleFollow(user.id, id);
   }
 
   /**

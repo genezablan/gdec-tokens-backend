@@ -20,14 +20,6 @@ export enum PostStatus {
   REJECTED = 'rejected',
 }
 
-export enum ReactionType {
-  LIKE = 'like',
-  HEART = 'heart',
-  CELEBRATE = 'celebrate',
-  LAUGH = 'laugh',
-  INSIGHTFUL = 'insightful',
-}
-
 export enum PraiseBadge {
   KUDOS = 'kudos',
   THANK_YOU = 'thank-you',

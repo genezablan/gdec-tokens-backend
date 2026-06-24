@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Post } from '../entities/post.entity';
 import { Comment } from '../entities/comment.entity';
+import { CommentReaction } from '../entities/comment-reaction.entity';
 import { Reaction } from '../entities/reaction.entity';
 import { PollOption } from '../entities/poll-option.entity';
 import { PollVote } from '../entities/poll-vote.entity';
@@ -21,6 +22,7 @@ import { CommunitiesModule } from '../communities/communities.module';
     TypeOrmModule.forFeature([
       Post,
       Comment,
+      CommentReaction,
       Reaction,
       PollOption,
       PollVote,

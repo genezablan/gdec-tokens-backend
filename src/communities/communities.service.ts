@@ -14,6 +14,7 @@ import { User } from '../entities/user.entity';
 import { CommunityPrivacy, CommunityRole } from '../common/enums';
 import { CommunityAccessService } from './community-access.service';
 import { CommunityNotifier } from './community-notifier.service';
+import { S3Service } from '../common/services/s3.service';
 import { CreateCommunityDto } from './dto/create-community.dto';
 import { UpdateCommunityDto } from './dto/update-community.dto';
 import { ReplaceResourcesDto } from './dto/community-resource.dto';
@@ -40,6 +41,7 @@ export class CommunitiesService {
     private readonly access: CommunityAccessService,
     private readonly mapper: CommunityMapper,
     private readonly notifier: CommunityNotifier,
+    private readonly s3Service: S3Service,
   ) {}
 
   // ─── Directory ────────────────────────────────────────────────────────────
@@ -206,6 +208,28 @@ export class CommunitiesService {
     return this.listMembers(user, id);
   }
 
+  /**
+   * POST /communities/:id/members/:userId/expert — toggle a member's expert flag
+   * (admin). Returns the updated member list.
+   */
+  async toggleMemberExpert(
+    user: User,
+    id: string,
+    targetUserId: string,
+  ): Promise<ApiMember[]> {
+    const community = await this.access.getCommunityOrThrow(id);
+    await this.access.assertCommunityAdmin(community, user);
+
+    const member = await this.memberRepo.findOne({
+      where: { communityId: id, userId: targetUserId },
+    });
+    if (!member) throw new NotFoundException('User is not a member');
+
+    member.expert = !member.expert;
+    await this.memberRepo.save(member);
+    return this.listMembers(user, id);
+  }
+
   // ─── Membership ─────────────────────────────────────────────────────────────
 
   /**
@@ -270,7 +294,9 @@ export class CommunitiesService {
       relations: { user: true },
       order: { role: 'ASC', joinedAt: 'ASC' },
     });
-    return members.map((m) => this.mapper.mapMember(m));
+    const mapped = members.map((m) => this.mapper.mapMember(m));
+    await this.s3Service.presignAvatars(mapped);
+    return mapped;
   }
 
   /** GET /communities/:id/requests — community admin only. */
