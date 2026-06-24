@@ -81,6 +81,17 @@ export class CommunitiesController {
     return this.communitiesService.updateMemberRole(user, id, userId, dto.role);
   }
 
+  /** POST /communities/:id/members/:userId/expert — toggle a member's expert flag (admin). */
+  @Post(':id/members/:userId/expert')
+  @HttpCode(HttpStatus.OK)
+  toggleMemberExpert(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @Param('userId') userId: string,
+  ) {
+    return this.communitiesService.toggleMemberExpert(user, id, userId);
+  }
+
   /** POST /communities/:id/join */
   @Post(':id/join')
   @HttpCode(HttpStatus.OK)

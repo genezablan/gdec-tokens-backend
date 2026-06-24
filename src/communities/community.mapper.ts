@@ -40,6 +40,7 @@ export interface ApiCommunity {
 /** API Member shape (docs/community.md §3.7). */
 export interface ApiMember extends UserBrief {
   role: CommunityRole;
+  expert: boolean;
 }
 
 /** API JoinRequest shape (docs/community.md §3.7). */
@@ -144,7 +145,7 @@ export class CommunityMapper {
 
   /** Map a membership row (its `user` relation must be loaded) to ApiMember. */
   mapMember(member: CommunityMember): ApiMember {
-    return { ...toUserBrief(member.user), role: member.role };
+    return { ...toUserBrief(member.user), role: member.role, expert: member.expert };
   }
 
   /** Map a join-request row (its `user` relation must be loaded) to ApiJoinRequest. */

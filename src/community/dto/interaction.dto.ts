@@ -1,25 +1,35 @@
 import {
   IsArray,
-  IsEnum,
   IsNotEmpty,
   IsOptional,
   IsString,
   MaxLength,
 } from 'class-validator';
-import { ReactionType } from '../../common/enums';
 
-/** POST /community/:id/react */
+/**
+ * POST /community/:id/react and /comments/:commentId/react.
+ * `type` is a free-form reaction value: an emoji grapheme (e.g. "🎉") or a
+ * curated GIF reference of the form "gif:<id>".
+ */
 export class ReactDto {
-  @IsEnum(ReactionType)
-  type: ReactionType;
-}
-
-/** POST /community/:id/comments */
-export class CreateCommentDto {
   @IsString()
   @IsNotEmpty()
+  @MaxLength(64)
+  type: string;
+}
+
+/** POST /community/:id/comments — needs text and/or a GIF (validated in the service). */
+export class CreateCommentDto {
+  @IsOptional()
+  @IsString()
   @MaxLength(2000)
-  text: string;
+  text?: string;
+
+  /** Optional GIF URL posted from the composer (a comment may be GIF-only). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  gifUrl?: string;
 
   /** @mentioned user IDs (server hydrates names/avatars). */
   @IsOptional()

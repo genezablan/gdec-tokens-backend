@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Announcement } from '../entities/announcement.entity';
@@ -7,6 +7,9 @@ import { CreateAnnouncementDto } from './dto/create-announcement.dto';
 import { UpdateAnnouncementDto } from './dto/update-announcement.dto';
 import { CommunitySanitizerService } from '../common/services/community-sanitizer.service';
 import { S3Service } from '../common/services/s3.service';
+import { EmailService } from '../common/services/email.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../entities/notification.entity';
 
 export interface ApiAnnouncementAuthor {
   id: string;
@@ -32,13 +35,23 @@ export interface ApiAnnouncement {
   updatedAt: Date;
 }
 
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 @Injectable()
 export class AnnouncementsService {
+  private readonly logger = new Logger(AnnouncementsService.name);
+
   constructor(
     @InjectRepository(Announcement)
     private readonly announcementRepo: Repository<Announcement>,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
     private readonly sanitizer: CommunitySanitizerService,
     private readonly s3Service: S3Service,
+    private readonly emailService: EmailService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /** Everyone: pinned first, then newest. */
@@ -77,7 +90,69 @@ export class AnnouncementsService {
         pinned: dto.pinned ?? false,
       }),
     );
-    return this.findOne(saved.id);
+    const created = await this.findOne(saved.id);
+
+    // Best-effort fan-out (in-app bell + email). Never block/fail the request.
+    void this.notifyNewAnnouncement(created, user);
+
+    return created;
+  }
+
+  /**
+   * Fan out a new announcement to every active employee: a persistent in-app
+   * notification (bell + SSE) and an email. Best-effort — failures are logged,
+   * never thrown, so a notification hiccup can't fail the create request.
+   */
+  private async notifyNewAnnouncement(
+    announcement: ApiAnnouncement,
+    author: User,
+  ): Promise<void> {
+    let users: { id: string; email: string }[] = [];
+    try {
+      users = await this.userRepo.find({
+        where: { isActive: true },
+        select: { id: true, email: true },
+      });
+    } catch (err) {
+      this.logger.warn(`Announcement recipient lookup failed: ${errMsg(err)}`);
+      return;
+    }
+
+    // In-app notifications — one per active user, excluding the author.
+    await Promise.all(
+      users
+        .filter((u) => u.id !== author.id)
+        .map((u) =>
+          this.notifications
+            .create(u.id, {
+              title: 'New announcement',
+              message: announcement.title,
+              type: NotificationType.INFO,
+              metadata: { deeplink: '/announcement', announcementId: announcement.id },
+            })
+            .catch((err) =>
+              this.logger.warn(`Announcement in-app notify failed for ${u.id}: ${errMsg(err)}`),
+            ),
+        ),
+    );
+
+    // Email (BCC, batched).
+    try {
+      const recipients = users
+        .map((u) => u.email)
+        .filter((e): e is string => !!e);
+      if (recipients.length === 0) return;
+
+      await this.emailService.sendAnnouncementEmail({
+        recipients,
+        title: announcement.title,
+        excerpt: announcement.body ?? '',
+        authorName: author.fullName,
+        createdAt: announcement.createdAt,
+      });
+    } catch (err) {
+      this.logger.warn(`Announcement email fan-out failed: ${errMsg(err)}`);
+    }
   }
 
   async update(

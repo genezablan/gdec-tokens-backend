@@ -699,4 +699,187 @@ export class EmailService {
       textBody: `Hello ${name},\n\nYour registration has not been approved.${reason ? '\n\nReason: ' + reason : ''}\n\nPlease contact HR for assistance.\n\nBest regards,\nGreat Deals Academy`,
     });
   }
+
+  // ─── Community & Announcement Notifications ────────────────────────────────
+
+  /** HTML-escape user-generated text before embedding it in an email body. */
+  private escapeHtml(s: string): string {
+    return (s ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  /** Collapse whitespace and trim to a short preview suitable for an email snippet. */
+  private excerpt(text: string, max = 200): string {
+    const clean = (text ?? '').replace(/\s+/g, ' ').trim();
+    return clean.length <= max ? clean : `${clean.slice(0, max).trimEnd()}…`;
+  }
+
+  /** Circular initials avatar (email-safe; degrades to a square in old Outlook). */
+  private initialsAvatar(name: string, size = 44): string {
+    const parts = (name || '').trim().split(/\s+/).filter(Boolean);
+    const initials =
+      `${parts[0]?.[0] ?? ''}${parts[1]?.[0] ?? ''}`.toUpperCase() || '?';
+    const palette = ['#3B82F6', '#8B5CF6', '#EC4899', '#10B981', '#F59E0B', '#EF4444', '#06B6D4', '#84CC16'];
+    const bg = palette[(name?.charCodeAt(0) || 0) % palette.length];
+    const fs = Math.round(size * 0.4);
+    return `<table cellpadding="0" cellspacing="0" role="presentation"><tr>
+      <td align="center" valign="middle" width="${size}" height="${size}" style="width:${size}px;height:${size}px;background:${bg};border-radius:${size}px;color:#ffffff;font-family:Arial,Helvetica,sans-serif;font-size:${fs}px;font-weight:700;line-height:${size}px;">${this.escapeHtml(initials)}</td>
+    </tr></table>`;
+  }
+
+  /**
+   * Viva-Engage-style post card: an optional "chip" label, an author row
+   * (avatar + name + timestamp), an optional title, and the post body — all
+   * inside a rounded, bordered card. User-generated text is escaped.
+   */
+  private postCard(opts: {
+    authorName: string;
+    timestamp?: string;
+    chip?: string;
+    title?: string | null;
+    content: string;
+    accent?: string;
+  }): string {
+    const { authorName, timestamp, chip, title, content, accent = BRAND.navy } = opts;
+    const chipHtml = chip
+      ? `<tr><td colspan="2" style="padding:0 0 14px;">
+           <span style="display:inline-block;background:${BRAND.body};color:${accent};font-size:12px;font-weight:700;padding:5px 12px;border-radius:999px;">${this.escapeHtml(chip)}</span>
+         </td></tr>`
+      : '';
+    const titleHtml = title
+      ? `<p style="margin:16px 0 6px;font-size:16px;font-weight:700;color:${BRAND.textDark};">${this.escapeHtml(title)}</p>`
+      : '';
+    const body = this.escapeHtml(this.excerpt(content, 320));
+    return `
+      <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="border:1px solid ${BRAND.border};border-radius:12px;background:${BRAND.white};margin:0 0 24px;">
+        <tr><td style="padding:20px 22px;">
+          <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+            ${chipHtml}
+            <tr>
+              <td width="44" valign="top" style="padding-right:12px;width:44px;">${this.initialsAvatar(authorName, 44)}</td>
+              <td valign="middle">
+                <p style="margin:0;font-size:15px;font-weight:700;color:${BRAND.textDark};">${this.escapeHtml(authorName)}</p>
+                ${timestamp ? `<p style="margin:2px 0 0;font-size:12px;color:${BRAND.textMuted};">${this.escapeHtml(timestamp)}</p>` : ''}
+              </td>
+            </tr>
+          </table>
+          ${titleHtml}
+          <p style="margin:${title ? '0' : '16px 0 0'};font-size:14px;line-height:1.65;color:${BRAND.textDark};">${body}</p>
+        </td></tr>
+      </table>`;
+  }
+
+  /**
+   * [TO ALL ACTIVE EMPLOYEES] Sent when a new announcement is published.
+   * Recipients are BCC'd in batches to respect SES's per-message recipient limit.
+   */
+  async sendAnnouncementEmail(opts: {
+    recipients: string[];
+    title: string;
+    excerpt: string;
+    authorName: string;
+    createdAt?: Date;
+  }): Promise<void> {
+    const { recipients, title, excerpt, authorName, createdAt } = opts;
+    const clean = [...new Set(recipients.filter((e) => !!e))];
+    if (clean.length === 0) return;
+
+    const content = `
+      <p style="margin:0 0 6px;font-size:15px;">Hi there,</p>
+      <p style="margin:0 0 22px;font-size:15px;color:${BRAND.textMuted};">A new announcement has been posted${authorName ? ` by <strong style="color:${BRAND.textDark};">${this.escapeHtml(authorName)}</strong>` : ''}.</p>
+      ${this.postCard({
+        authorName: authorName || 'Great Deals Academy',
+        timestamp: createdAt ? this.formatDateTime(createdAt) : undefined,
+        chip: '📢 Announcement',
+        title,
+        content: excerpt,
+        accent: BRAND.gold,
+      })}
+      ${this.button('View Announcement', `${this.frontendUrl}/announcement`, BRAND.navy)}
+    `;
+    const htmlBody = this.buildTemplate(content);
+    const textBody = `New announcement: ${title}\n\n${this.excerpt(excerpt)}\n\nView it here: ${this.frontendUrl}/announcement\n\nBest regards,\nGreat Deals Academy`;
+
+    // SES caps a single message at 50 recipients; BCC in batches of 45.
+    const BATCH = 45;
+    for (let i = 0; i < clean.length; i += BATCH) {
+      await this.sendEmail({
+        to: this.fromEmail,
+        bcc: clean.slice(i, i + BATCH),
+        subject: `📢 New Announcement: ${title}`,
+        htmlBody,
+        textBody,
+      });
+    }
+  }
+
+  /** [TO MENTIONED USER] Sent when someone @mentions them in a community post. */
+  async sendCommunityMentionEmail(opts: {
+    to: string;
+    recipientName: string;
+    authorName: string;
+    communityName: string;
+    excerpt: string;
+    postId: string;
+    postTitle?: string | null;
+    createdAt?: Date;
+  }): Promise<void> {
+    const { to, recipientName, authorName, communityName, excerpt, postId, postTitle, createdAt } = opts;
+    const content = `
+      <p style="margin:0 0 6px;font-size:15px;">Hi <strong>${this.escapeHtml(recipientName)}</strong>,</p>
+      <p style="margin:0 0 22px;font-size:15px;color:${BRAND.textMuted};"><strong style="color:${BRAND.textDark};">${this.escapeHtml(authorName)}</strong> mentioned you in <strong style="color:${BRAND.textDark};">${this.escapeHtml(communityName)}</strong>.</p>
+      ${this.postCard({
+        authorName,
+        timestamp: createdAt ? this.formatDateTime(createdAt) : undefined,
+        chip: `Posted in ${communityName}`,
+        title: postTitle,
+        content: excerpt,
+        accent: BRAND.navy,
+      })}
+      ${this.button('View Post', `${this.frontendUrl}/community/${postId}`, BRAND.navy)}
+    `;
+    await this.sendEmail({
+      to,
+      subject: `${authorName} mentioned you in ${communityName}`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${recipientName},\n\n${authorName} mentioned you in a post in ${communityName}.\n\n${this.excerpt(excerpt)}\n\nView it here: ${this.frontendUrl}/community/${postId}\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /** [TO PRAISED USER] Sent when someone praises them in a community praise post. */
+  async sendCommunityPraiseEmail(opts: {
+    to: string;
+    recipientName: string;
+    authorName: string;
+    communityName: string;
+    excerpt: string;
+    postId: string;
+    postTitle?: string | null;
+    createdAt?: Date;
+  }): Promise<void> {
+    const { to, recipientName, authorName, communityName, excerpt, postId, postTitle, createdAt } = opts;
+    const content = `
+      <p style="margin:0 0 6px;font-size:15px;">Hi <strong>${this.escapeHtml(recipientName)}</strong>,</p>
+      <p style="margin:0 0 22px;font-size:15px;color:${BRAND.textMuted};">🎉 <strong style="color:${BRAND.textDark};">${this.escapeHtml(authorName)}</strong> praised you in <strong style="color:${BRAND.textDark};">${this.escapeHtml(communityName)}</strong>!</p>
+      ${this.postCard({
+        authorName,
+        timestamp: createdAt ? this.formatDateTime(createdAt) : undefined,
+        chip: `👏 Praise · ${communityName}`,
+        title: postTitle,
+        content: excerpt,
+        accent: BRAND.green,
+      })}
+      ${this.button('View Post', `${this.frontendUrl}/community/${postId}`, BRAND.green)}
+    `;
+    await this.sendEmail({
+      to,
+      subject: `🎉 ${authorName} praised you in ${communityName}`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${recipientName},\n\n${authorName} praised you in ${communityName}!\n\n${this.excerpt(excerpt)}\n\nView it here: ${this.frontendUrl}/community/${postId}\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
 }

@@ -8,6 +8,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository, SelectQueryBuilder } from 'typeorm';
 import { Post } from '../entities/post.entity';
 import { Comment } from '../entities/comment.entity';
+import { CommentReaction } from '../entities/comment-reaction.entity';
 import { Reaction } from '../entities/reaction.entity';
 import { PollOption } from '../entities/poll-option.entity';
 import { PollVote } from '../entities/poll-vote.entity';
@@ -19,9 +20,10 @@ import { PostAttachment } from '../entities/post-attachment.entity';
 import { User } from '../entities/user.entity';
 import { CommunityPrivacy, PostStatus, PostType } from '../common/enums';
 import { CommunitySanitizerService } from '../common/services/community-sanitizer.service';
+import { S3Service } from '../common/services/s3.service';
 import { CommunityAccessService } from '../communities/community-access.service';
 import { CommunityNotifier } from '../communities/community-notifier.service';
-import { ApiPost, PostMapper } from './post.mapper';
+import { ApiPost, ApiReactor, PostMapper } from './post.mapper';
 import { CreatePostDto } from './dto/create-post.dto';
 import { UpdatePostDto } from './dto/update-post.dto';
 import { ReactDto, CreateCommentDto, VoteDto } from './dto/interaction.dto';
@@ -50,6 +52,8 @@ export class CommunityService {
     private readonly postRepo: Repository<Post>,
     @InjectRepository(Comment)
     private readonly commentRepo: Repository<Comment>,
+    @InjectRepository(CommentReaction)
+    private readonly commentReactionRepo: Repository<CommentReaction>,
     @InjectRepository(Reaction)
     private readonly reactionRepo: Repository<Reaction>,
     @InjectRepository(PollOption)
@@ -70,6 +74,7 @@ export class CommunityService {
     private readonly sanitizer: CommunitySanitizerService,
     private readonly mapper: PostMapper,
     private readonly notifier: CommunityNotifier,
+    private readonly s3Service: S3Service,
   ) {}
 
   // ─── Feed ───────────────────────────────────────────────────────────────
@@ -185,6 +190,9 @@ export class CommunityService {
           community,
           authorId: post.authorId,
           authorName: post.author?.fullName ?? '',
+          postExcerpt: post.body ?? post.title ?? '',
+          postTitle: post.title ?? null,
+          postCreatedAt: post.createdAt,
           mentionedUserIds: mentions.map((m) => m.userId),
           praisedUserIds:
             post.type === PostType.PRAISE ? praised.map((p) => p.userId) : [],
@@ -377,6 +385,69 @@ export class CommunityService {
     return this.mapper.mapOne(post, user.id);
   }
 
+  /**
+   * GET /community/:id/reactions — everyone who reacted, with their reaction value
+   * (emoji), name, job title and (presigned) avatar. Powers the "Reactions" dialog.
+   */
+  async listReactors(user: User, id: string): Promise<ApiReactor[]> {
+    const post = await this.loadPost(id);
+    if (!post) throw new NotFoundException('Post not found');
+    await this.assertPostVisible(post, user);
+
+    const reactions = await this.reactionRepo.find({
+      where: { postId: id },
+      relations: { user: true },
+      order: { createdAt: 'ASC' },
+    });
+    const reactors: ApiReactor[] = reactions
+      .filter((r) => r.user)
+      .map((r) => ({
+        id: r.user.id,
+        name: r.user.fullName,
+        avatarUrl: r.user.profilePicture ?? null,
+        jobTitle: r.user.position ?? null,
+        value: r.type,
+      }));
+    await this.s3Service.presignAvatars(reactors);
+    return reactors;
+  }
+
+  /**
+   * GET /community/:id/comments/:commentId/reactions — everyone who reacted to a
+   * comment, with their reaction value, name, job title and (presigned) avatar.
+   */
+  async listCommentReactors(
+    user: User,
+    postId: string,
+    commentId: string,
+  ): Promise<ApiReactor[]> {
+    const post = await this.loadPost(postId);
+    if (!post) throw new NotFoundException('Post not found');
+    await this.assertPostVisible(post, user);
+
+    const comment = await this.commentRepo.findOne({
+      where: { id: commentId, postId },
+    });
+    if (!comment) throw new NotFoundException('Comment not found');
+
+    const reactions = await this.commentReactionRepo.find({
+      where: { commentId },
+      relations: { user: true },
+      order: { createdAt: 'ASC' },
+    });
+    const reactors: ApiReactor[] = reactions
+      .filter((r) => r.user)
+      .map((r) => ({
+        id: r.user.id,
+        name: r.user.fullName,
+        avatarUrl: r.user.profilePicture ?? null,
+        jobTitle: r.user.position ?? null,
+        value: r.value,
+      }));
+    await this.s3Service.presignAvatars(reactors);
+    return reactors;
+  }
+
   async addComment(
     user: User,
     id: string,
@@ -386,11 +457,18 @@ export class CommunityService {
     if (!post) throw new NotFoundException('Post not found');
     await this.assertPostVisible(post, user);
 
+    const text = dto.text?.trim() || null;
+    const gifUrl = dto.gifUrl?.trim() || null;
+    if (!text && !gifUrl) {
+      throw new BadRequestException('A comment needs text or a GIF');
+    }
+
     const comment = await this.commentRepo.save(
       this.commentRepo.create({
         postId: id,
         authorId: user.id, // author from token
-        text: dto.text.trim(),
+        text,
+        gifUrl,
       }),
     );
 
@@ -411,6 +489,45 @@ export class CommunityService {
       commenterName: user.fullName,
       mentionedUserIds,
     });
+
+    return this.mapper.mapOne(post, user.id, { fullComments: true });
+  }
+
+  /**
+   * Toggle the caller's reaction on a comment. `value` is an emoji grapheme or a
+   * "gif:<id>" reference. Reacting with the same value clears it; a different
+   * value switches the reaction. Returns the updated post (with full comments)
+   * so the client can patch its caches like it does for post reactions.
+   */
+  async reactToComment(
+    user: User,
+    postId: string,
+    commentId: string,
+    value: string,
+  ): Promise<ApiPost> {
+    const post = await this.loadPost(postId);
+    if (!post) throw new NotFoundException('Post not found');
+    await this.assertPostVisible(post, user);
+
+    const comment = await this.commentRepo.findOne({
+      where: { id: commentId, postId },
+    });
+    if (!comment) throw new NotFoundException('Comment not found');
+
+    const existing = await this.commentReactionRepo.findOne({
+      where: { commentId, userId: user.id },
+    });
+    if (!existing) {
+      await this.commentReactionRepo.save(
+        this.commentReactionRepo.create({ commentId, userId: user.id, value }),
+      );
+    } else if (existing.value === value) {
+      // Reacting with the same value again clears it.
+      await this.commentReactionRepo.delete({ commentId, userId: user.id });
+    } else {
+      existing.value = value;
+      await this.commentReactionRepo.save(existing);
+    }
 
     return this.mapper.mapOne(post, user.id, { fullComments: true });
   }
@@ -554,6 +671,9 @@ export class CommunityService {
       selfId: user.id,
     });
 
+    if (query.authorId) {
+      qb.andWhere('p."authorId" = :authorId', { authorId: query.authorId });
+    }
     if (query.type && query.type !== 'all') {
       qb.andWhere('p.type = :type', { type: query.type });
     }

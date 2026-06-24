@@ -31,8 +31,12 @@ export class Comment {
   @JoinColumn({ name: 'authorId' })
   author: User;
 
-  @Column({ type: 'text' })
-  text: string;
+  @Column({ type: 'text', nullable: true })
+  text: string | null;
+
+  /** Optional GIF posted from the composer; a comment may be GIF-only. */
+  @Column({ type: 'varchar', nullable: true })
+  gifUrl: string | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;

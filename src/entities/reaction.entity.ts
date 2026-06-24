@@ -6,13 +6,14 @@ import {
   ManyToOne,
   JoinColumn,
 } from 'typeorm';
-import { ReactionType } from '../common/enums';
 import { Post } from './post.entity';
 import { User } from './user.entity';
 
 /**
  * A reaction. docs/community.md §12 (`reactions`).
  * PK (postId, userId) enforces one reaction per user per post.
+ * `type` is a free-form reaction value: an emoji grapheme (e.g. "🎉") or a
+ * curated GIF reference of the form "gif:<id>".
  */
 @Entity('reactions')
 export class Reaction {
@@ -22,8 +23,8 @@ export class Reaction {
   @PrimaryColumn('uuid')
   userId: string;
 
-  @Column({ type: 'enum', enum: ReactionType })
-  type: ReactionType;
+  @Column({ type: 'varchar' })
+  type: string;
 
   @ManyToOne(() => Post, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'postId' })
