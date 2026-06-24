@@ -190,6 +190,9 @@ export class CommunityService {
           community,
           authorId: post.authorId,
           authorName: post.author?.fullName ?? '',
+          postExcerpt: post.body ?? post.title ?? '',
+          postTitle: post.title ?? null,
+          postCreatedAt: post.createdAt,
           mentionedUserIds: mentions.map((m) => m.userId),
           praisedUserIds:
             post.type === PostType.PRAISE ? praised.map((p) => p.userId) : [],

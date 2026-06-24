@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Not, Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { CommunityMember } from '../entities/community-member.entity';
 import { Community } from '../entities/community.entity';
 import { User } from '../entities/user.entity';
@@ -10,6 +10,7 @@ import {
   NotificationsService,
   CreateNotificationDto,
 } from '../notifications/notifications.service';
+import { EmailService } from '../common/services/email.service';
 
 /**
  * Bridges Community domain events to the platform notifications system
@@ -32,6 +33,7 @@ export class CommunityNotifier {
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     private readonly notifications: NotificationsService,
+    private readonly email: EmailService,
   ) {}
 
   // ─── Moderation events ────────────────────────────────────────────────────
@@ -119,6 +121,11 @@ export class CommunityNotifier {
     authorName: string;
     mentionedUserIds: string[];
     praisedUserIds: string[];
+    /** Plain-text snippet of the post, for the email preview. */
+    postExcerpt?: string;
+    /** Post title (if any) and creation time, for the email post card. */
+    postTitle?: string | null;
+    postCreatedAt?: Date;
   }): Promise<void> {
     const { postId, community, authorId, authorName } = params;
     const deeplink = `/community/${postId}`;
@@ -145,6 +152,18 @@ export class CommunityNotifier {
         ),
       ]);
 
+      // Targeted emails for the people directly mentioned / praised.
+      await this.emailMentionsAndPraise({
+        mentioned,
+        praised,
+        authorName,
+        communityName: community.name,
+        excerpt: params.postExcerpt ?? '',
+        postId,
+        postTitle: params.postTitle ?? null,
+        createdAt: params.postCreatedAt,
+      });
+
       // Ephemeral live update to other members.
       const members = await this.memberIds(community.id, authorId);
       this.notifications.pushEventToMany(members, {
@@ -155,6 +174,64 @@ export class CommunityNotifier {
     } catch (err) {
       this.logger.warn(`postCreated notify failed: ${asMessage(err)}`);
     }
+  }
+
+  /**
+   * Email the users mentioned / praised in a post (active accounts only).
+   * Best-effort — EmailService.sendEmail never throws, and any lookup error is
+   * caught by the caller's try/catch.
+   */
+  private async emailMentionsAndPraise(params: {
+    mentioned: string[];
+    praised: string[];
+    authorName: string;
+    communityName: string;
+    excerpt: string;
+    postId: string;
+    postTitle?: string | null;
+    createdAt?: Date;
+  }): Promise<void> {
+    const { mentioned, praised, authorName, communityName, excerpt, postId, postTitle, createdAt } = params;
+    const [mentionUsers, praiseUsers] = await Promise.all([
+      this.activeUsersByIds(mentioned),
+      this.activeUsersByIds(praised),
+    ]);
+
+    await Promise.all([
+      ...mentionUsers.map((u) =>
+        this.email.sendCommunityMentionEmail({
+          to: u.email,
+          recipientName: u.firstName || u.fullName,
+          authorName,
+          communityName,
+          excerpt,
+          postId,
+          postTitle,
+          createdAt,
+        }),
+      ),
+      ...praiseUsers.map((u) =>
+        this.email.sendCommunityPraiseEmail({
+          to: u.email,
+          recipientName: u.firstName || u.fullName,
+          authorName,
+          communityName,
+          excerpt,
+          postId,
+          postTitle,
+          createdAt,
+        }),
+      ),
+    ]);
+  }
+
+  /** Active users (id, email, name) for the given ids — used for email fan-out. */
+  private async activeUsersByIds(ids: string[]): Promise<User[]> {
+    if (ids.length === 0) return [];
+    return this.userRepo.find({
+      where: { id: In(ids), isActive: true },
+      select: { id: true, email: true, firstName: true, lastName: true },
+    });
   }
 
   async commentAdded(params: {
