@@ -12,6 +12,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
+import { UpdateUserDto } from './dto/update-user.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from '../entities/user.entity';
@@ -35,10 +36,7 @@ export class UsersController {
    * Auth: any authenticated user (for role=coach lookup); admin-only for full list
    */
   @Get()
-  findAll(
-    @Query('role') role?: string,
-    @Query('isActive') isActive?: string,
-  ) {
+  findAll(@Query('role') role?: string, @Query('isActive') isActive?: string) {
     const roleEnum = role ? (role as UserRole) : undefined;
     if (role && !Object.values(UserRole).includes(role as UserRole)) {
       throw new BadRequestException(`Invalid role: ${role}`);
@@ -62,7 +60,11 @@ export class UsersController {
     const users = await this.usersService.findAll(undefined, undefined, true);
     const currentYear = new Date().getFullYear();
     // Attach tokensToBeAllocated so the approval page can display it
-    return users.map((u) => ({ ...u, tokensToBeAllocated: 6, tokenYear: currentYear }));
+    return users.map((u) => ({
+      ...u,
+      tokensToBeAllocated: 6,
+      tokenYear: currentYear,
+    }));
   }
 
   /**
@@ -109,6 +111,23 @@ export class UsersController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.usersService.toggleFollow(user.id, id);
+  }
+
+  /**
+   * PATCH /users/:id
+   * HR/admin edit of a user's profile (manager, department, position, employee type).
+   * `immediateSupervisorId: null` clears the manager; a UUID must belong to an
+   * active user with the approver role. In-flight token requests keep the
+   * approver resolved at submission time; only new requests route to the new manager.
+   * Auth: hr_approver or admin.
+   */
+  @Patch(':id')
+  @Roles(UserRole.HR_APPROVER, UserRole.ADMIN)
+  updateUser(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateUserDto,
+  ) {
+    return this.usersService.updateUser(id, dto);
   }
 
   /**
