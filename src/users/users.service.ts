@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ArrayContains, Repository } from 'typeorm';
 import { User } from '../entities/user.entity';
@@ -6,6 +10,7 @@ import { TokenBalance } from '../entities/token-balance.entity';
 import { UserFollow } from '../entities/user-follow.entity';
 import { Post } from '../entities/post.entity';
 import { PostStatus, UserRole } from '../common/enums';
+import { UpdateUserDto } from './dto/update-user.dto';
 import { EmailService } from '../common/services/email.service';
 import { S3Service } from '../common/services/s3.service';
 
@@ -44,16 +49,24 @@ export class UsersService {
    * GET /users/:id/profile — public profile + per-viewer follow state. Available
    * to any authenticated user (unlike the admin-oriented findOne).
    */
-  async getProfile(viewerId: string, targetId: string): Promise<ApiUserProfile> {
+  async getProfile(
+    viewerId: string,
+    targetId: string,
+  ): Promise<ApiUserProfile> {
     const user = await this.userRepo.findOne({ where: { id: targetId } });
     if (!user) throw new NotFoundException('User not found');
 
-    const [postsCount, followersCount, followingCount, mine] = await Promise.all([
-      this.postRepo.count({ where: { authorId: targetId, status: PostStatus.APPROVED } }),
-      this.followRepo.count({ where: { followingId: targetId } }),
-      this.followRepo.count({ where: { followerId: targetId } }),
-      this.followRepo.findOne({ where: { followerId: viewerId, followingId: targetId } }),
-    ]);
+    const [postsCount, followersCount, followingCount, mine] =
+      await Promise.all([
+        this.postRepo.count({
+          where: { authorId: targetId, status: PostStatus.APPROVED },
+        }),
+        this.followRepo.count({ where: { followingId: targetId } }),
+        this.followRepo.count({ where: { followerId: targetId } }),
+        this.followRepo.findOne({
+          where: { followerId: viewerId, followingId: targetId },
+        }),
+      ]);
 
     const profile: ApiUserProfile = {
       id: user.id,
@@ -91,10 +104,14 @@ export class UsersService {
     if (existing) {
       await this.followRepo.delete({ followerId, followingId: targetId });
     } else {
-      await this.followRepo.save(this.followRepo.create({ followerId, followingId: targetId }));
+      await this.followRepo.save(
+        this.followRepo.create({ followerId, followingId: targetId }),
+      );
     }
 
-    const followersCount = await this.followRepo.count({ where: { followingId: targetId } });
+    const followersCount = await this.followRepo.count({
+      where: { followingId: targetId },
+    });
     return { isFollowing: !existing, followersCount };
   }
 
@@ -130,7 +147,11 @@ export class UsersService {
    * - ?isActive=true|false                              → filter by active status (default: all)
    * Sorted by lastName asc.
    */
-  async findAll(role?: UserRole, isActive?: boolean, isPendingApproval?: boolean) {
+  async findAll(
+    role?: UserRole,
+    isActive?: boolean,
+    isPendingApproval?: boolean,
+  ) {
     const where: Record<string, unknown> = {};
 
     if (role) {
@@ -189,6 +210,49 @@ export class UsersService {
     }));
   }
 
+  /**
+   * PATCH /users/:id — HR/admin profile edit.
+   * A new supervisor must be an active user with the approver role (the same
+   * requirement token-request routing enforces) and cannot be the user themselves.
+   */
+  async updateUser(id: string, dto: UpdateUserDto) {
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException(`User ${id} not found`);
+
+    if (dto.immediateSupervisorId !== undefined) {
+      if (dto.immediateSupervisorId === null) {
+        user.immediateSupervisorId = null as unknown as string;
+      } else {
+        if (dto.immediateSupervisorId === id) {
+          throw new BadRequestException('A user cannot be their own manager');
+        }
+        const supervisor = await this.userRepo.findOne({
+          where: { id: dto.immediateSupervisorId },
+        });
+        if (!supervisor)
+          throw new NotFoundException('Selected manager not found');
+        if (!supervisor.isActive) {
+          throw new BadRequestException(
+            'Selected manager is not an active user',
+          );
+        }
+        if (!supervisor.hasRole(UserRole.APPROVER)) {
+          throw new BadRequestException(
+            'Selected manager must have the approver role to receive token requests',
+          );
+        }
+        user.immediateSupervisorId = dto.immediateSupervisorId;
+      }
+    }
+
+    if (dto.department !== undefined) user.department = dto.department;
+    if (dto.position !== undefined) user.position = dto.position;
+    if (dto.employeeType !== undefined) user.employeeType = dto.employeeType;
+
+    await this.userRepo.save(user);
+    return this.safeUser(user);
+  }
+
   async updateRoles(id: string, roles: UserRole[]) {
     const user = await this.userRepo.findOne({ where: { id } });
     if (!user) throw new NotFoundException(`User ${id} not found`);
@@ -232,10 +296,12 @@ export class UsersService {
       );
     }
 
-    this.emailService.sendRegistrationApprovedEmail({
-      email: user.email,
-      name: user.fullName,
-    }).catch(() => {});
+    this.emailService
+      .sendRegistrationApprovedEmail({
+        email: user.email,
+        name: user.fullName,
+      })
+      .catch(() => {});
 
     return {
       ...this.safeUser(user),
@@ -255,11 +321,13 @@ export class UsersService {
     user.isActive = false;
     await this.userRepo.save(user);
 
-    this.emailService.sendRegistrationRejectedEmail({
-      email: user.email,
-      name: user.fullName,
-      reason,
-    }).catch(() => {});
+    this.emailService
+      .sendRegistrationRejectedEmail({
+        email: user.email,
+        name: user.fullName,
+        reason,
+      })
+      .catch(() => {});
 
     return this.safeUser(user);
   }

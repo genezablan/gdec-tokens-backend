@@ -9,7 +9,10 @@ import { UsersController } from './users.controller';
 import { CommonModule } from '../common/common.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, TokenBalance, UserFollow, Post]), CommonModule],
+  imports: [
+    TypeOrmModule.forFeature([User, TokenBalance, UserFollow, Post]),
+    CommonModule,
+  ],
   controllers: [UsersController],
   providers: [UsersService],
   exports: [UsersService],
