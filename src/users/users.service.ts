@@ -9,12 +9,17 @@ import { User } from '../entities/user.entity';
 import { TokenBalance } from '../entities/token-balance.entity';
 import { UserFollow } from '../entities/user-follow.entity';
 import { Post } from '../entities/post.entity';
-import { PostStatus, UserRole } from '../common/enums';
+import { Community } from '../entities/community.entity';
+import { CommunityMember } from '../entities/community-member.entity';
+import { CommunityRole, PostStatus, UserRole } from '../common/enums';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { EmailService } from '../common/services/email.service';
 import { S3Service } from '../common/services/s3.service';
 
 const TOKENS_PER_YEAR = 6;
+
+/** Company-wide home community (1GDEC) every user belongs to. See scripts/seed-communities.ts. */
+const DEFAULT_COMMUNITY_ID = 'general';
 
 /** Public profile shape consumed by the member profile page. */
 export interface ApiUserProfile {
@@ -41,6 +46,10 @@ export class UsersService {
     private readonly followRepo: Repository<UserFollow>,
     @InjectRepository(Post)
     private readonly postRepo: Repository<Post>,
+    @InjectRepository(Community)
+    private readonly communityRepo: Repository<Community>,
+    @InjectRepository(CommunityMember)
+    private readonly communityMemberRepo: Repository<CommunityMember>,
     private readonly emailService: EmailService,
     private readonly s3Service: S3Service,
   ) {}
@@ -220,29 +229,8 @@ export class UsersService {
     if (!user) throw new NotFoundException(`User ${id} not found`);
 
     if (dto.immediateSupervisorId !== undefined) {
-      if (dto.immediateSupervisorId === null) {
-        user.immediateSupervisorId = null as unknown as string;
-      } else {
-        if (dto.immediateSupervisorId === id) {
-          throw new BadRequestException('A user cannot be their own manager');
-        }
-        const supervisor = await this.userRepo.findOne({
-          where: { id: dto.immediateSupervisorId },
-        });
-        if (!supervisor)
-          throw new NotFoundException('Selected manager not found');
-        if (!supervisor.isActive) {
-          throw new BadRequestException(
-            'Selected manager is not an active user',
-          );
-        }
-        if (!supervisor.hasRole(UserRole.APPROVER)) {
-          throw new BadRequestException(
-            'Selected manager must have the approver role to receive token requests',
-          );
-        }
-        user.immediateSupervisorId = dto.immediateSupervisorId;
-      }
+      await this.assertValidSupervisor(id, dto.immediateSupervisorId);
+      user.immediateSupervisorId = dto.immediateSupervisorId as string;
     }
 
     if (dto.department !== undefined) user.department = dto.department;
@@ -251,6 +239,29 @@ export class UsersService {
 
     await this.userRepo.save(user);
     return this.safeUser(user);
+  }
+
+  /** null (clear manager) is always valid; a UUID must be an active approver other than the user. */
+  private async assertValidSupervisor(
+    userId: string,
+    supervisorId: string | null,
+  ): Promise<void> {
+    if (supervisorId === null) return;
+    if (supervisorId === userId) {
+      throw new BadRequestException('A user cannot be their own manager');
+    }
+    const supervisor = await this.userRepo.findOne({
+      where: { id: supervisorId },
+    });
+    if (!supervisor) throw new NotFoundException('Selected manager not found');
+    if (!supervisor.isActive) {
+      throw new BadRequestException('Selected manager is not an active user');
+    }
+    if (!supervisor.hasRole(UserRole.APPROVER)) {
+      throw new BadRequestException(
+        'Selected manager must have the approver role to receive token requests',
+      );
+    }
   }
 
   async updateRoles(id: string, roles: UserRole[]) {
@@ -296,6 +307,8 @@ export class UsersService {
       );
     }
 
+    await this.joinDefaultCommunity(user.id);
+
     this.emailService
       .sendRegistrationApprovedEmail({
         email: user.email,
@@ -308,6 +321,36 @@ export class UsersService {
       tokensAllocated: TOKENS_PER_YEAR,
       tokenYear: currentYear,
     };
+  }
+
+  /**
+   * Every user belongs to the company-wide 1GDEC community. The seed script
+   * only backfills users that exist when it runs, so newly approved accounts
+   * are joined here. Skips silently if the community was never seeded or the
+   * user is already a member; never fails the approval.
+   */
+  private async joinDefaultCommunity(userId: string): Promise<void> {
+    try {
+      const community = await this.communityRepo.findOne({
+        where: { id: DEFAULT_COMMUNITY_ID },
+      });
+      if (!community) return;
+
+      const existing = await this.communityMemberRepo.findOne({
+        where: { communityId: DEFAULT_COMMUNITY_ID, userId },
+      });
+      if (existing) return;
+
+      await this.communityMemberRepo.save(
+        this.communityMemberRepo.create({
+          communityId: DEFAULT_COMMUNITY_ID,
+          userId,
+          role: CommunityRole.MEMBER,
+        }),
+      );
+    } catch {
+      // Best-effort: membership can be fixed by re-running seed:communities.
+    }
   }
 
   async rejectPendingRegistration(id: string, reason?: string) {
