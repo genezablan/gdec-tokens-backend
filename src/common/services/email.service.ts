@@ -137,8 +137,8 @@ export class EmailService {
         <!-- Header -->
         <tr>
           <td style="background:${BRAND.primary};padding:28px 40px;text-align:center;">
-            <p style="margin:0 0 6px;color:${BRAND.accent};font-size:11px;font-weight:700;letter-spacing:3px;text-transform:uppercase;">GREAT DEALS ACADEMY</p>
-            <p style="margin:0;color:${BRAND.white};font-size:20px;font-weight:700;font-family:'Poppins',Helvetica,Arial,sans-serif;letter-spacing:0.5px;">Development Tokens</p>
+            <img src="${this.frontendUrl}/logo-dark.png" width="160" height="51" alt="Great Deals Academy" style="display:inline-block;border:0;outline:none;text-decoration:none;max-width:160px;height:auto;">
+            <p style="margin:12px 0 0;color:${BRAND.white};font-size:20px;font-weight:700;font-family:'Poppins',Helvetica,Arial,sans-serif;letter-spacing:0.5px;">Development Tokens</p>
           </td>
         </tr>
 
