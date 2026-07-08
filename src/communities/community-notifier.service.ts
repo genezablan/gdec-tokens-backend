@@ -79,8 +79,11 @@ export class CommunityNotifier {
     postId: string;
     community: Community;
     authorId: string;
+    authorName?: string;
+    postTitle?: string | null;
+    postExcerpt?: string;
   }): Promise<void> {
-    const { postId, community, authorId } = params;
+    const { postId, community, authorId, postTitle, postExcerpt } = params;
     try {
       await this.persist(authorId, {
         title: 'Post approved 🎉',
@@ -88,6 +91,18 @@ export class CommunityNotifier {
         type: NotificationType.SUCCESS,
         metadata: { deeplink: `/community/${postId}`, postId, communityId: community.id },
       });
+
+      const author = await this.activeUserById(authorId);
+      if (author) {
+        await this.email.sendPostApprovedEmail({
+          to: author.email,
+          recipientName: author.firstName || author.fullName,
+          communityName: community.name,
+          postId,
+          postTitle: postTitle ?? null,
+          excerpt: postExcerpt ?? '',
+        });
+      }
     } catch (err) {
       this.logger.warn(`postApproved notify failed: ${asMessage(err)}`);
     }
@@ -98,8 +113,11 @@ export class CommunityNotifier {
     postId: string;
     community: Community;
     authorId: string;
+    authorName?: string;
+    postTitle?: string | null;
+    postExcerpt?: string;
   }): Promise<void> {
-    const { postId, community, authorId } = params;
+    const { postId, community, authorId, postTitle, postExcerpt } = params;
     try {
       await this.persist(authorId, {
         title: 'Post not approved',
@@ -107,6 +125,17 @@ export class CommunityNotifier {
         type: NotificationType.WARNING,
         metadata: { deeplink: `/community/${postId}`, postId, communityId: community.id },
       });
+
+      const author = await this.activeUserById(authorId);
+      if (author) {
+        await this.email.sendPostRejectedEmail({
+          to: author.email,
+          recipientName: author.firstName || author.fullName,
+          communityName: community.name,
+          postTitle: postTitle ?? null,
+          excerpt: postExcerpt ?? '',
+        });
+      }
     } catch (err) {
       this.logger.warn(`postRejected notify failed: ${asMessage(err)}`);
     }
@@ -234,6 +263,14 @@ export class CommunityNotifier {
     });
   }
 
+  /** Single active user (id, email, name) — used for single-recipient email sends. */
+  private async activeUserById(id: string): Promise<User | null> {
+    return this.userRepo.findOne({
+      where: { id, isActive: true },
+      select: { id: true, email: true, firstName: true, lastName: true },
+    });
+  }
+
   async commentAdded(params: {
     postId: string;
     communityId: string;
@@ -334,6 +371,16 @@ export class CommunityNotifier {
         type: approved ? NotificationType.SUCCESS : NotificationType.INFO,
         metadata: { deeplink: `/communities/${community.id}`, communityId: community.id },
       });
+
+      const target = await this.activeUserById(targetUserId);
+      if (target) {
+        await this.email.sendJoinRequestDecisionEmail({
+          to: target.email,
+          recipientName: target.firstName || target.fullName,
+          communityName: community.name,
+          approved,
+        });
+      }
     } catch (err) {
       this.logger.warn(`requestDecision notify failed: ${asMessage(err)}`);
     }

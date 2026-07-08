@@ -197,9 +197,23 @@ export class CommunityService {
           praisedUserIds:
             post.type === PostType.PRAISE ? praised.map((p) => p.userId) : [],
         });
-        void this.notifier.postApproved({ postId: id, community, authorId: post.authorId });
+        void this.notifier.postApproved({
+          postId: id,
+          community,
+          authorId: post.authorId,
+          authorName: post.author?.fullName ?? '',
+          postTitle: post.title ?? null,
+          postExcerpt: post.body ?? post.title ?? '',
+        });
       } else if (status === PostStatus.REJECTED) {
-        void this.notifier.postRejected({ postId: id, community, authorId: post.authorId });
+        void this.notifier.postRejected({
+          postId: id,
+          community,
+          authorId: post.authorId,
+          authorName: post.author?.fullName ?? '',
+          postTitle: post.title ?? null,
+          postExcerpt: post.body ?? post.title ?? '',
+        });
       }
     }
 

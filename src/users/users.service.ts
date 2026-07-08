@@ -269,6 +269,15 @@ export class UsersService {
     if (!user) throw new NotFoundException(`User ${id} not found`);
     user.roles = roles;
     await this.userRepo.save(user);
+
+    this.emailService
+      .sendRolesUpdatedEmail({
+        email: user.email,
+        name: user.fullName,
+        roles: user.roles,
+      })
+      .catch(() => {});
+
     return this.safeUser(user);
   }
 
@@ -277,6 +286,15 @@ export class UsersService {
     if (!user) throw new NotFoundException(`User ${id} not found`);
     user.isActive = !user.isActive;
     await this.userRepo.save(user);
+
+    this.emailService
+      .sendAccountStatusChangedEmail({
+        email: user.email,
+        name: user.fullName,
+        isActive: user.isActive,
+      })
+      .catch(() => {});
+
     return this.safeUser(user);
   }
 
