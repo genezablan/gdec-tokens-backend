@@ -19,6 +19,9 @@ export interface SendEmailResponse {
   message: string;
 }
 
+/** Use-it-or-lose-it reminder tiers, in calendar order. */
+export type TokenReminderCheckpoint = 'Q1' | 'Q2' | 'Q3' | 'OCT' | 'NOV' | 'FINAL';
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const BRAND = {
@@ -1172,6 +1175,74 @@ export class EmailService {
       subject: 'Your Development Token Balance Was Adjusted',
       htmlBody: this.buildTemplate(content),
       textBody: `Hi ${name},\n\nYour Development Token balance for ${year} has been manually adjusted.\n\nPrevious Boost Tokens: ${previousBoost}\nUpdated Boost Tokens: ${updatedBoost}\nChange: ${delta > 0 ? '+' : ''}${delta}\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /** Copy + CTA color for each use-it-or-lose-it reminder tier. */
+  private tokenReminderCopy(
+    checkpoint: TokenReminderCheckpoint,
+    remaining: number,
+    allocated: number,
+    year: number,
+  ): { subject: string; intro: string; ctaColor: string } {
+    const tokenWord = `token${remaining !== 1 ? 's' : ''}`;
+    const remainingLabel = `${remaining} of your ${allocated} Development Tokens`;
+
+    if (checkpoint === 'FINAL') {
+      return {
+        subject: `Last Chance: ${remaining} Development ${tokenWord[0].toUpperCase()}${tokenWord.slice(1)} Expire Dec 31`,
+        intro: `This is your last reminder for ${year} — you still have ${remainingLabel} unused, and they expire at midnight on December 31.`,
+        ctaColor: BRAND.danger,
+      };
+    }
+    if (checkpoint === 'OCT' || checkpoint === 'NOV') {
+      return {
+        subject: `Don't Lose Them: ${remaining} Development ${tokenWord[0].toUpperCase()}${tokenWord.slice(1)} Unused`,
+        intro: `With ${year} winding down, you still have ${remainingLabel} sitting unused. Development Tokens don't roll over — anything left on the table resets to 0 on January 1.`,
+        ctaColor: BRAND.pending,
+      };
+    }
+    return {
+      subject: `Friendly Reminder: ${remaining} Development ${tokenWord[0].toUpperCase()}${tokenWord.slice(1)} Available`,
+      intro: `Just a heads up — you still have ${remainingLabel} available for ${year}. They're there whenever you're ready to use them.`,
+      ctaColor: BRAND.primary,
+    };
+  }
+
+  /** [TO EMPLOYEE] Use-it-or-lose-it reminder — sent once per checkpoint tier per year to anyone with an unused balance. */
+  async sendTokenUsageReminderEmail(opts: {
+    email: string;
+    name: string;
+    remaining: number;
+    allocated: number;
+    year: number;
+    checkpoint: TokenReminderCheckpoint;
+  }): Promise<void> {
+    const { email, name, remaining, allocated, year, checkpoint } = opts;
+    const { subject, intro, ctaColor } = this.tokenReminderCopy(checkpoint, remaining, allocated, year);
+    // OCT/NOV/FINAL copy already states the no-carry-over policy in the intro; avoid repeating it.
+    const carryOverNote = checkpoint === 'Q1' || checkpoint === 'Q2' || checkpoint === 'Q3'
+      ? `<p style="margin:0;color:${BRAND.textMuted};font-size:13px;">Development Tokens don't carry over — any unused balance resets to 0 when the new year starts.</p>`
+      : '';
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${name}</strong>,</p>
+      <p style="margin:0 0 20px;">${intro}</p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 24px;">
+        ${this.detailRow('Unused Tokens:', `${remaining} of ${allocated}`)}
+        ${this.detailRow('Year:', String(year))}
+      </table>
+
+      ${carryOverNote}
+      ${this.button('Use My Tokens', `${this.frontendUrl}/my-tokens`, ctaColor)}
+    `;
+
+    await this.sendEmail({
+      to: email,
+      subject,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${name},\n\n${intro}\n\nUnused Tokens: ${remaining} of ${allocated}\nYear: ${year}\n\nUse your tokens: ${this.frontendUrl}/my-tokens\n\nBest regards,\nGreat Deals Academy`,
     });
   }
 }

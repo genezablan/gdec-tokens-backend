@@ -35,6 +35,13 @@ export class TokenBalance {
   @Column({ type: 'int', default: 0 })
   boostTokens: number; // Additional tokens granted on top of base allocation
 
+  /** Latest use-it-or-lose-it reminder tier sent this year: Q1 | Q2 | Q3 | OCT | NOV | FINAL. */
+  @Column({ type: 'varchar', nullable: true })
+  lastReminderCheckpoint: string | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  lastReminderSentAt: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { TokenBalancesService } from './token-balances.service';
+import { TokenReminderService } from './token-reminder.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { User } from '../entities/user.entity';
@@ -21,7 +22,10 @@ import { UpdateBoostTokensDto } from './dto/update-boost-tokens.dto';
 
 @Controller('token-balances')
 export class TokenBalancesController {
-  constructor(private readonly tokenBalancesService: TokenBalancesService) {}
+  constructor(
+    private readonly tokenBalancesService: TokenBalancesService,
+    private readonly tokenReminderService: TokenReminderService,
+  ) {}
 
   /**
    * GET /token-balances/me/dashboard
@@ -154,5 +158,17 @@ export class TokenBalancesController {
   @Roles(UserRole.ADMIN)
   initializeYear(@Body() dto: InitializeYearDto) {
     return this.tokenBalancesService.initializeYear(dto.year);
+  }
+
+  /**
+   * POST /token-balances/reminders/run
+   * Admin: manually run the use-it-or-lose-it reminder check for today's tier,
+   * instead of waiting for the daily cron. Safe to call more than once — anyone
+   * already caught up to the current tier is skipped.
+   */
+  @Post('reminders/run')
+  @Roles(UserRole.ADMIN)
+  runReminders() {
+    return this.tokenReminderService.runNow();
   }
 }
