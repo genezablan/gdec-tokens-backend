@@ -342,6 +342,28 @@ export class AuthService {
 
     await this.userRepository.save(user);
 
+    this.emailService
+      .sendRegistrationSubmittedEmail({ email: user.email, name: user.fullName })
+      .catch(() => {});
+
+    const hrUsers = await this.userRepository
+      .createQueryBuilder('hr')
+      .where(':role = ANY(hr.roles)', { role: UserRole.HR_APPROVER })
+      .andWhere('hr.isActive = true')
+      .getMany();
+
+    for (const hrUser of hrUsers) {
+      this.emailService
+        .sendNewRegistrationNotification({
+          hrEmail: hrUser.email,
+          hrName: hrUser.fullName,
+          applicantName: user.fullName,
+          applicantEmail: user.email,
+          department: user.department,
+        })
+        .catch(() => {});
+    }
+
     return { message: 'Registration submitted. Your account is pending HR approval. You will receive an email once your account is approved.' };
   }
 

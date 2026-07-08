@@ -8,7 +8,9 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Not, IsNull, Repository } from 'typeorm';
 import { Tutorial } from '../entities/tutorial.entity';
+import { User } from '../entities/user.entity';
 import { S3Service } from '../common/services/s3.service';
+import { EmailService } from '../common/services/email.service';
 import { CreateTutorialDto } from './dto/create-tutorial.dto';
 import { UpdateTutorialDto } from './dto/update-tutorial.dto';
 
@@ -70,7 +72,10 @@ export class TutorialsService implements OnApplicationBootstrap {
   constructor(
     @InjectRepository(Tutorial)
     private readonly tutorialRepository: Repository<Tutorial>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
     private readonly s3Service: S3Service,
+    private readonly emailService: EmailService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -115,8 +120,12 @@ export class TutorialsService implements OnApplicationBootstrap {
    */
   async update(id: string, dto: UpdateTutorialDto): Promise<TutorialResponse> {
     const tutorial = await this.getEntity(id);
+    const wasVisible = this.isPubliclyVisible(tutorial);
     Object.assign(tutorial, dto);
     const saved = await this.tutorialRepository.save(tutorial);
+    if (!wasVisible && this.isPubliclyVisible(saved)) {
+      this.notifyPublished(saved).catch(() => {});
+    }
     return this.toResponse(saved);
   }
 
@@ -161,8 +170,12 @@ export class TutorialsService implements OnApplicationBootstrap {
    */
   async saveVideo(id: string, key: string): Promise<TutorialResponse> {
     const tutorial = await this.getEntity(id);
+    const wasVisible = this.isPubliclyVisible(tutorial);
     tutorial.videoKey = key;
     const saved = await this.tutorialRepository.save(tutorial);
+    if (!wasVisible && this.isPubliclyVisible(saved)) {
+      this.notifyPublished(saved).catch(() => {});
+    }
     return this.toResponse(saved);
   }
 
@@ -185,6 +198,34 @@ export class TutorialsService implements OnApplicationBootstrap {
       throw new NotFoundException('Tutorial not found');
     }
     return tutorial;
+  }
+
+  /** A tutorial is visible to employees once it's active AND has a video uploaded. */
+  private isPubliclyVisible(tutorial: Tutorial): boolean {
+    return tutorial.isActive && !!tutorial.videoKey;
+  }
+
+  /**
+   * Fan out an email to every active employee the first time a tutorial
+   * becomes publicly visible. Best-effort — failures are logged, never thrown.
+   */
+  private async notifyPublished(tutorial: Tutorial): Promise<void> {
+    try {
+      const users = await this.userRepository.find({
+        where: { isActive: true },
+        select: { email: true },
+      });
+      const recipients = users.map((u) => u.email).filter((e): e is string => !!e);
+      if (recipients.length === 0) return;
+
+      await this.emailService.sendTutorialPublishedEmail({
+        recipients,
+        title: tutorial.title,
+        excerpt: tutorial.description ?? tutorial.title,
+      });
+    } catch (err) {
+      this.logger.warn(`Tutorial publish email fan-out failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**

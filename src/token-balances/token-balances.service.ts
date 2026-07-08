@@ -9,6 +9,7 @@ import { Repository } from 'typeorm';
 import { TokenBalance } from '../entities/token-balance.entity';
 import { User } from '../entities/user.entity';
 import { EmployeeStatus } from '../common/enums';
+import { EmailService } from '../common/services/email.service';
 
 const TOKENS_PER_YEAR = 6;
 
@@ -39,6 +40,7 @@ export class TokenBalancesService {
     private readonly tokenBalanceRepository: Repository<TokenBalance>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    private readonly emailService: EmailService,
   ) {}
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -135,6 +137,22 @@ export class TokenBalancesService {
     this.logger.log(
       `Boost tokens updated for user ${userId} year ${year}: ${previous} → ${boostTokens}`,
     );
+
+    if (previous !== boostTokens) {
+      const user = await this.userRepository.findOne({ where: { id: userId } });
+      if (user) {
+        this.emailService
+          .sendTokenBalanceAdjustedEmail({
+            email: user.email,
+            name: user.fullName,
+            previousBoost: previous,
+            updatedBoost: boostTokens,
+            year,
+          })
+          .catch(() => {});
+      }
+    }
+
     return this.toSummary(balance);
   }
 
