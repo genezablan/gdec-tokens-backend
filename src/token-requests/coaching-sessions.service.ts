@@ -6,7 +6,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Not, Repository } from 'typeorm';
+import { In, Not, QueryFailedError, Repository } from 'typeorm';
 import { CoachingSession } from '../entities/coaching-session.entity';
 import { CoachAvailability } from '../entities/coach-availability.entity';
 import { TokenRequest } from '../entities/token-request.entity';
@@ -110,6 +110,44 @@ export class CoachingSessionsService {
     } catch (err) {
       this.logger.error(
         `Failed to cancel calendar event for session ${session.id}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Live Outlook check at booking time — unlike getBookableSlots (which only
+   * checks Outlook when the slot list is first displayed), this closes the gap
+   * where the coach's calendar changes between page-load and the employee
+   * clicking Confirm. No-ops if the coach hasn't connected a calendar.
+   *
+   * The Graph call itself is best-effort, matching syncSessionToCalendar/
+   * removeSessionFromCalendar below: a stale token or a Graph outage logs a
+   * warning and lets the (already locally-validated) booking proceed rather
+   * than making booking depend on Microsoft's uptime.
+   */
+  private async assertNoOutlookConflict(
+    coachId: string,
+    availableDate: string,
+    startTime: string,
+    endTime: string,
+  ): Promise<void> {
+    if (!(await this.calendarService.isConnected(coachId))) return;
+    const start = new Date(`${availableDate}T${startTime}`);
+    const end = new Date(`${availableDate}T${endTime}`);
+
+    let busy: { start: Date; end: Date }[];
+    try {
+      busy = await this.calendarService.getBusyIntervals(coachId, start, end);
+    } catch (err) {
+      this.logger.warn(
+        `Outlook conflict check failed for coach ${coachId}, proceeding without it: ${(err as Error).message}`,
+      );
+      return;
+    }
+
+    if (busy.some((b) => start < b.end && end > b.start)) {
+      throw new BadRequestException(
+        "This time conflicts with the coach's Outlook calendar. Please choose another slot.",
       );
     }
   }
@@ -293,6 +331,14 @@ export class CoachingSessionsService {
         where: { id: dto.availabilityId },
       });
       if (!slot) throw new NotFoundException('Availability slot not found');
+      // This legacy path never went through the Outlook-live getBookableSlots
+      // check, so verify it here too.
+      await this.assertNoOutlookConflict(
+        coachId,
+        slot.availableDate,
+        slot.startTime,
+        slot.endTime,
+      );
     } else if (dto.availableDate && dto.startTime && dto.endTime) {
       // Guard against double-booking the coach at this exact time.
       const startAt = new Date(`${dto.availableDate}T${dto.startTime}`);
@@ -312,6 +358,14 @@ export class CoachingSessionsService {
       if (clash) {
         throw new BadRequestException('This time slot is no longer available');
       }
+      // Re-check Outlook live — the slot list the employee picked from may be
+      // stale (fetched before the coach's calendar changed).
+      await this.assertNoOutlookConflict(
+        coachId,
+        dto.availableDate,
+        dto.startTime,
+        dto.endTime,
+      );
       slot = await this.availabilityRepo.save(
         this.availabilityRepo.create({
           coachId,
@@ -360,7 +414,20 @@ export class CoachingSessionsService {
       status: CoachingSessionStatus.PENDING_COACH_APPROVAL,
     });
 
-    const saved = await this.sessionRepo.save(session);
+    let saved: CoachingSession;
+    try {
+      saved = await this.sessionRepo.save(session);
+    } catch (err) {
+      // A concurrent request won the race for this exact coach/time —
+      // enforced by the partial unique index on (coachId, scheduledAt).
+      if (
+        err instanceof QueryFailedError &&
+        (err as unknown as { code?: string }).code === '23505'
+      ) {
+        throw new BadRequestException('This time slot is no longer available');
+      }
+      throw err;
+    }
 
     // Notify the coach that a booking request is pending their confirmation
     const coach = await this.userRepo.findOne({ where: { id: coachId } });
