@@ -2,15 +2,20 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ArrayContains, Repository } from 'typeorm';
+import { ArrayContains, Not, Repository } from 'typeorm';
 import { User } from '../entities/user.entity';
 import { TokenBalance } from '../entities/token-balance.entity';
 import { UserFollow } from '../entities/user-follow.entity';
 import { Post } from '../entities/post.entity';
 import { Community } from '../entities/community.entity';
 import { CommunityMember } from '../entities/community-member.entity';
+import { TokenRequest } from '../entities/token-request.entity';
+import { CoachingSession } from '../entities/coaching-session.entity';
+import { CoachAvailability } from '../entities/coach-availability.entity';
+import { DevelopmentOption } from '../entities/development-option.entity';
 import { CommunityRole, PostStatus, UserRole } from '../common/enums';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { EmailService } from '../common/services/email.service';
@@ -50,6 +55,14 @@ export class UsersService {
     private readonly communityRepo: Repository<Community>,
     @InjectRepository(CommunityMember)
     private readonly communityMemberRepo: Repository<CommunityMember>,
+    @InjectRepository(TokenRequest)
+    private readonly tokenRequestRepo: Repository<TokenRequest>,
+    @InjectRepository(CoachingSession)
+    private readonly coachingSessionRepo: Repository<CoachingSession>,
+    @InjectRepository(CoachAvailability)
+    private readonly coachAvailabilityRepo: Repository<CoachAvailability>,
+    @InjectRepository(DevelopmentOption)
+    private readonly developmentOptionRepo: Repository<DevelopmentOption>,
     private readonly emailService: EmailService,
     private readonly s3Service: S3Service,
   ) {}
@@ -391,5 +404,104 @@ export class UsersService {
       .catch(() => {});
 
     return this.safeUser(user);
+  }
+
+  /**
+   * DELETE /users/:id — Admin-only, permanent removal.
+   * Blocked (409, with reasons) if the user is referenced by any relation that
+   * the DB enforces as ON DELETE NO ACTION (manager, token requests, coaching
+   * data) — those must be reassigned/cleared first. Once clear, the delete
+   * relies on DB-level ON DELETE CASCADE / SET NULL to clean up everything
+   * else (posts, comments, notifications, community memberships, etc.).
+   */
+  async deleteUser(
+    id: string,
+    currentUserId: string,
+  ): Promise<{ success: true }> {
+    if (id === currentUserId) {
+      throw new BadRequestException('You cannot delete your own account');
+    }
+
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException(`User ${id} not found`);
+
+    if (user.hasRole(UserRole.ADMIN)) {
+      await this.assertNotLastAdmin(id);
+    }
+
+    const reasons = await this.findDeletionBlockers(id);
+    if (reasons.length > 0) {
+      throw new ConflictException({ message: 'Cannot delete user', reasons });
+    }
+
+    const result = await this.userRepo.delete(id);
+    if (!result.affected) throw new NotFoundException(`User ${id} not found`);
+    return { success: true };
+  }
+
+  private async assertNotLastAdmin(id: string): Promise<void> {
+    const otherAdmins = await this.userRepo.count({
+      where: { roles: ArrayContains([UserRole.ADMIN]), id: Not(id) },
+    });
+    if (otherAdmins === 0) {
+      throw new ConflictException(
+        'Cannot delete the only remaining admin account',
+      );
+    }
+  }
+
+  /**
+   * Counts every relation the DB enforces as ON DELETE NO ACTION for this
+   * user (manager, token requests, coaching data) and turns each non-zero
+   * count into a human-readable reason the delete is blocked.
+   */
+  private async findDeletionBlockers(id: string): Promise<string[]> {
+    const plural = (n: number) => (n === 1 ? '' : 's');
+    const checks: Array<{
+      count: Promise<number>;
+      label: (n: number) => string;
+    }> = [
+      {
+        count: this.userRepo.count({ where: { immediateSupervisorId: id } }),
+        label: (n) => `Is the manager of ${n} employee${plural(n)}`,
+      },
+      {
+        count: this.tokenRequestRepo.count({ where: { employeeId: id } }),
+        label: (n) => `Has ${n} token request${plural(n)} as employee`,
+      },
+      {
+        count: this.tokenRequestRepo.count({ where: { managerId: id } }),
+        label: (n) => `Has handled ${n} token request${plural(n)} as manager`,
+      },
+      {
+        count: this.tokenRequestRepo.count({ where: { hrId: id } }),
+        label: (n) => `Has processed ${n} token request${plural(n)} as HR`,
+      },
+      {
+        count: this.tokenRequestRepo.count({ where: { rejectedById: id } }),
+        label: (n) => `Has rejected ${n} token request${plural(n)}`,
+      },
+      {
+        count: this.coachingSessionRepo.count({ where: { coachId: id } }),
+        label: (n) => `Has coached ${n} session${plural(n)}`,
+      },
+      {
+        count: this.coachingSessionRepo.count({ where: { employeeId: id } }),
+        label: (n) => `Has attended ${n} session${plural(n)} as coachee`,
+      },
+      {
+        count: this.coachAvailabilityRepo.count({ where: { coachId: id } }),
+        label: (n) => `Has published ${n} coach availability slot${plural(n)}`,
+      },
+      {
+        count: this.developmentOptionRepo.count({ where: { updatedById: id } }),
+        label: (n) => `Has edited ${n} development option${plural(n)}`,
+      },
+    ];
+
+    const counts = await Promise.all(checks.map((c) => c.count));
+    return checks
+      .map((c, i) => (counts[i] > 0 ? c.label(counts[i]) : null))
+      .filter((reason): reason is string => reason !== null);
   }
 }
