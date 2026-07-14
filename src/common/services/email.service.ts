@@ -930,7 +930,7 @@ export class EmailService {
       </table>
 
       <p style="margin:0;color:${BRAND.textMuted};font-size:14px;">Please log in to the application to approve or reject this registration.</p>
-      ${this.button('Review Registration', `${this.frontendUrl}/admin/users`)}
+      ${this.button('Review Registration', `${this.frontendUrl}/hr/registrations`)}
     `;
     await this.sendEmail({
       to: hrEmail,
@@ -1168,7 +1168,7 @@ export class EmailService {
       </table>
 
       <p style="margin:0;color:${BRAND.textMuted};font-size:13px;">You may view your current balance anytime via the application.</p>
-      ${this.button('View My Balance', `${this.frontendUrl}/my-tokens`)}
+      ${this.button('View My Balance', `${this.frontendUrl}/token-management`)}
     `;
     await this.sendEmail({
       to: email,
@@ -1235,14 +1235,14 @@ export class EmailService {
       </table>
 
       ${carryOverNote}
-      ${this.button('Use My Tokens', `${this.frontendUrl}/my-tokens`, ctaColor)}
+      ${this.button('Use My Tokens', `${this.frontendUrl}/token-management`, ctaColor)}
     `;
 
     await this.sendEmail({
       to: email,
       subject,
       htmlBody: this.buildTemplate(content),
-      textBody: `Hi ${name},\n\n${intro}\n\nUnused Tokens: ${remaining} of ${allocated}\nYear: ${year}\n\nUse your tokens: ${this.frontendUrl}/my-tokens\n\nBest regards,\nGreat Deals Academy`,
+      textBody: `Hi ${name},\n\n${intro}\n\nUnused Tokens: ${remaining} of ${allocated}\nYear: ${year}\n\nUse your tokens: ${this.frontendUrl}/token-management\n\nBest regards,\nGreat Deals Academy`,
     });
   }
 }
