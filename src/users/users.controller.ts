@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Param,
   Query,
   Body,
@@ -183,5 +184,23 @@ export class UsersController {
     @Body('reason') reason?: string,
   ) {
     return this.usersService.rejectPendingRegistration(id, reason);
+  }
+
+  /**
+   * DELETE /users/:id
+   * Permanently delete a user. Rejected with 409 (+ reasons) if the user is
+   * still referenced by a manager relation, token requests, or coaching data
+   * — those must be reassigned first. A user cannot delete themselves, and
+   * the last remaining admin cannot be deleted.
+   * Auth: admin only.
+   */
+  @Delete(':id')
+  @Roles(UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  deleteUser(
+    @CurrentUser() currentUser: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.usersService.deleteUser(id, currentUser.id);
   }
 }
