@@ -1,3 +1,4 @@
+import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
@@ -6,27 +7,37 @@ import {
   Matches,
   Max,
   Min,
+  ValidateNested,
 } from 'class-validator';
 
-/** Per-coach coaching availability window. Outlook busy times are subtracted
- *  from this window to produce bookable slots. */
+const TIME_REGEX = /^\d{2}:\d{2}$/;
+
+/** One coaching window on a single day of the week. */
+export class CoachingWindowDto {
+  /** Day of week this window applies to (0=Sun … 6=Sat). */
+  @IsInt()
+  @Min(0)
+  @Max(6)
+  day!: number;
+
+  @Matches(TIME_REGEX, { message: 'startTime must be HH:MM' })
+  startTime!: string;
+
+  @Matches(TIME_REGEX, { message: 'endTime must be HH:MM' })
+  endTime!: string;
+}
+
+/** Per-coach coaching availability. Each day can have several non-overlapping
+ *  windows (e.g. 9–12 and 1–5); Outlook busy times are subtracted from these
+ *  windows to produce bookable slots. */
 export class UpdateCoachingHoursDto {
-  /** Days of week the coach offers coaching (0=Sun … 6=Sat). */
+  /** Days not listed are not offered. */
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(7)
-  @IsInt({ each: true })
-  @Min(0, { each: true })
-  @Max(6, { each: true })
-  coachingDays?: number[];
-
-  @IsOptional()
-  @Matches(/^\d{2}:\d{2}$/, { message: 'coachingStartTime must be HH:MM' })
-  coachingStartTime?: string;
-
-  @IsOptional()
-  @Matches(/^\d{2}:\d{2}$/, { message: 'coachingEndTime must be HH:MM' })
-  coachingEndTime?: string;
+  @ArrayMaxSize(28)
+  @ValidateNested({ each: true })
+  @Type(() => CoachingWindowDto)
+  coachingWeeklyHours?: CoachingWindowDto[];
 
   @IsOptional()
   @IsInt()

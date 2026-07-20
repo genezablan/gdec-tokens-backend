@@ -4,7 +4,7 @@ import { In, Not, Repository } from 'typeorm';
 import { CommunityMember } from '../entities/community-member.entity';
 import { Community } from '../entities/community.entity';
 import { User } from '../entities/user.entity';
-import { CommunityRole, UserRole } from '../common/enums';
+import { CommunityRole } from '../common/enums';
 import { NotificationType } from '../entities/notification.entity';
 import {
   NotificationsService,
@@ -35,111 +35,6 @@ export class CommunityNotifier {
     private readonly notifications: NotificationsService,
     private readonly email: EmailService,
   ) {}
-
-  // ─── Moderation events ────────────────────────────────────────────────────
-
-  /**
-   * A post was created and is awaiting approval. Tell the author it's pending
-   * and notify platform admins that there's something to review. No members /
-   * mentions / praise are notified yet — that happens on approval (postCreated).
-   */
-  async postSubmittedForApproval(params: {
-    postId: string;
-    community: Community;
-    authorId: string;
-    authorName: string;
-  }): Promise<void> {
-    const { postId, community, authorId, authorName } = params;
-    try {
-      await this.persist(authorId, {
-        title: 'Post pending approval',
-        message: `Your post in ${community.name} was submitted and is awaiting admin approval.`,
-        type: NotificationType.INFO,
-        metadata: { deeplink: `/community/${postId}`, postId, communityId: community.id },
-      });
-
-      const adminIds = (await this.platformAdminIds()).filter((id) => id !== authorId);
-      await Promise.all(
-        adminIds.map((userId) =>
-          this.persist(userId, {
-            title: 'Post awaiting approval',
-            message: `${authorName} submitted a post in ${community.name} for approval.`,
-            type: NotificationType.INFO,
-            metadata: { deeplink: '/message-approval', postId, communityId: community.id },
-          }),
-        ),
-      );
-    } catch (err) {
-      this.logger.warn(`postSubmittedForApproval notify failed: ${asMessage(err)}`);
-    }
-  }
-
-  /** An admin approved a pending post → tell the author it's now live. */
-  async postApproved(params: {
-    postId: string;
-    community: Community;
-    authorId: string;
-    authorName?: string;
-    postTitle?: string | null;
-    postExcerpt?: string;
-  }): Promise<void> {
-    const { postId, community, authorId, postTitle, postExcerpt } = params;
-    try {
-      await this.persist(authorId, {
-        title: 'Post approved 🎉',
-        message: `Your post in ${community.name} was approved and is now live.`,
-        type: NotificationType.SUCCESS,
-        metadata: { deeplink: `/community/${postId}`, postId, communityId: community.id },
-      });
-
-      const author = await this.activeUserById(authorId);
-      if (author) {
-        await this.email.sendPostApprovedEmail({
-          to: author.email,
-          recipientName: author.firstName || author.fullName,
-          communityName: community.name,
-          postId,
-          postTitle: postTitle ?? null,
-          excerpt: postExcerpt ?? '',
-        });
-      }
-    } catch (err) {
-      this.logger.warn(`postApproved notify failed: ${asMessage(err)}`);
-    }
-  }
-
-  /** An admin rejected a post → tell the author. */
-  async postRejected(params: {
-    postId: string;
-    community: Community;
-    authorId: string;
-    authorName?: string;
-    postTitle?: string | null;
-    postExcerpt?: string;
-  }): Promise<void> {
-    const { postId, community, authorId, postTitle, postExcerpt } = params;
-    try {
-      await this.persist(authorId, {
-        title: 'Post not approved',
-        message: `Your post in ${community.name} was not approved and won't be published.`,
-        type: NotificationType.WARNING,
-        metadata: { deeplink: `/community/${postId}`, postId, communityId: community.id },
-      });
-
-      const author = await this.activeUserById(authorId);
-      if (author) {
-        await this.email.sendPostRejectedEmail({
-          to: author.email,
-          recipientName: author.firstName || author.fullName,
-          communityName: community.name,
-          postTitle: postTitle ?? null,
-          excerpt: postExcerpt ?? '',
-        });
-      }
-    } catch (err) {
-      this.logger.warn(`postRejected notify failed: ${asMessage(err)}`);
-    }
-  }
 
   // ─── Feed events ──────────────────────────────────────────────────────────
 
@@ -401,16 +296,6 @@ export class CommunityNotifier {
       select: { userId: true },
     });
     return rows.map((r) => r.userId);
-  }
-
-  /** User IDs of all platform admins (roles array contains 'admin'). */
-  private async platformAdminIds(): Promise<string[]> {
-    const rows = await this.userRepo
-      .createQueryBuilder('u')
-      .select('u.id', 'id')
-      .where(':role = ANY(u.roles)', { role: UserRole.ADMIN })
-      .getRawMany<{ id: string }>();
-    return rows.map((r) => r.id);
   }
 }
 

@@ -647,6 +647,118 @@ export class EmailService {
     });
   }
 
+  /**
+   * [TO THE OTHER PARTY] Sent when either the employee or the coach requests
+   * to cancel a confirmed session — the recipient must approve or keep it.
+   */
+  async sendSessionCancelRequestedNotification(opts: {
+    recipientEmail: string;
+    recipientName: string;
+    requesterName: string;
+    sessionNumber: number;
+    scheduledAt: Date;
+    reason?: string | null;
+    requestId: string;
+  }): Promise<void> {
+    const { recipientEmail, recipientName, requesterName, sessionNumber, scheduledAt, reason, requestId } = opts;
+    const dateStr = this.formatDateTime(scheduledAt);
+    const reasonRow = reason
+      ? `<div style="background:${BRAND.body};border-left:4px solid ${BRAND.pending};padding:12px 16px;margin:0 0 20px;border-radius:0 4px 4px 0;color:${BRAND.textDark};">${reason}</div>`
+      : '';
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${recipientName}</strong>,</p>
+      <p style="margin:0 0 20px;"><strong>${requesterName}</strong> has requested to cancel a confirmed coaching session. It will only be cancelled if you approve — otherwise it stays scheduled.</p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 24px;">
+        ${this.detailRow('Requested by:', requesterName)}
+        ${this.detailRow('Session:', `Session ${sessionNumber} of 3`)}
+        ${this.detailRow('Scheduled Time:', dateStr)}
+      </table>
+      ${reasonRow}
+
+      <p style="margin:0 0 20px;color:${BRAND.textMuted};font-size:14px;">Log in to approve the cancellation or keep the session as-is.</p>
+      ${this.button('Review Request', `${this.frontendUrl}/coaching/${requestId}/sessions`, BRAND.pending)}
+    `;
+
+    await this.sendEmail({
+      to: recipientEmail,
+      subject: `Cancellation Requested — Session ${sessionNumber} (Action Needed)`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${recipientName},\n\n${requesterName} requested to cancel Session ${sessionNumber} of 3 (${dateStr}).${reason ? `\n\nReason: ${reason}` : ''}\n\nIt only cancels if you approve. Please log in to respond.\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /**
+   * [TO REQUESTER] Sent when the other party approves a cancellation request.
+   */
+  async sendSessionCancelApprovedNotification(opts: {
+    recipientEmail: string;
+    recipientName: string;
+    approverName: string;
+    sessionNumber: number;
+    scheduledAt: Date;
+  }): Promise<void> {
+    const { recipientEmail, recipientName, approverName, sessionNumber, scheduledAt } = opts;
+    const dateStr = this.formatDateTime(scheduledAt);
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${recipientName}</strong>,</p>
+      <p style="margin:0 0 20px;"><strong>${approverName}</strong> approved your request to cancel Session ${sessionNumber}. The session is now <strong style="color:${BRAND.danger};">cancelled</strong> and the slot has been released.</p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 24px;">
+        ${this.detailRow('Session:', `Session ${sessionNumber} of 3`)}
+        ${this.detailRow('Was scheduled for:', dateStr)}
+        ${this.detailRow('Status:', `<span style="color:${BRAND.danger};font-weight:600;">Cancelled</span>`)}
+      </table>
+
+      <p style="margin:0;color:${BRAND.textMuted};font-size:14px;">You can book a new slot for this session whenever you're ready.</p>
+    `;
+
+    await this.sendEmail({
+      to: recipientEmail,
+      subject: `Session ${sessionNumber} Cancellation Approved`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${recipientName},\n\n${approverName} approved your request to cancel Session ${sessionNumber} of 3 (${dateStr}). The slot has been released — you can book a new one anytime.\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /**
+   * [TO REQUESTER] Sent when the other party declines a cancellation request.
+   */
+  async sendSessionCancelDeclinedNotification(opts: {
+    recipientEmail: string;
+    recipientName: string;
+    declinerName: string;
+    sessionNumber: number;
+    scheduledAt: Date;
+    requestId: string;
+  }): Promise<void> {
+    const { recipientEmail, recipientName, declinerName, sessionNumber, scheduledAt, requestId } = opts;
+    const dateStr = this.formatDateTime(scheduledAt);
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${recipientName}</strong>,</p>
+      <p style="margin:0 0 20px;"><strong>${declinerName}</strong> declined your request to cancel Session ${sessionNumber}. The session remains <strong style="color:${BRAND.success};">scheduled</strong> as before.</p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 24px;">
+        ${this.detailRow('Session:', `Session ${sessionNumber} of 3`)}
+        ${this.detailRow('Scheduled Time:', dateStr)}
+        ${this.detailRow('Status:', `<span style="color:${BRAND.success};font-weight:600;">Scheduled</span>`)}
+      </table>
+
+      <p style="margin:0;color:${BRAND.textMuted};font-size:14px;">If you still need to cancel, reach out to them directly or submit a new request.</p>
+      ${this.button('View My Sessions', `${this.frontendUrl}/coaching/${requestId}/sessions`, BRAND.primary)}
+    `;
+
+    await this.sendEmail({
+      to: recipientEmail,
+      subject: `Session ${sessionNumber} Cancellation Declined`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${recipientName},\n\n${declinerName} declined your request to cancel Session ${sessionNumber} of 3 (${dateStr}). The session remains scheduled.\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
   /** Formats a Date as "February 20, 2026 · 9:00 AM". */
   private formatDateTime(d: Date): string {
     return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
@@ -997,72 +1109,6 @@ export class EmailService {
       subject: 'Your Account Permissions Have Been Updated',
       htmlBody: this.buildTemplate(content),
       textBody: `Hello ${name},\n\nYour account permissions have been updated. Current roles: ${rolesLabel}\n\nIf you believe this is a mistake, please contact HR.\n\nBest regards,\nGreat Deals Academy`,
-    });
-  }
-
-  // ─── Community Moderation Notifications ────────────────────────────────────
-
-  /** [TO AUTHOR] Sent when their community post is approved by a moderator. */
-  async sendPostApprovedEmail(opts: {
-    to: string;
-    recipientName: string;
-    communityName: string;
-    postId: string;
-    postTitle?: string | null;
-    excerpt: string;
-  }): Promise<void> {
-    const { to, recipientName, communityName, postId, postTitle, excerpt } = opts;
-    const content = `
-      <p style="margin:0 0 6px;font-size:15px;">Hi <strong>${this.escapeHtml(recipientName)}</strong>,</p>
-      <p style="margin:0 0 22px;font-size:15px;color:${BRAND.textMuted};">Your post in <strong style="color:${BRAND.textDark};">${this.escapeHtml(communityName)}</strong> has been <strong style="color:${BRAND.success};">approved</strong> and is now visible to the community.</p>
-      ${this.postCard({
-        authorName: recipientName,
-        chip: `✅ Approved · ${communityName}`,
-        title: postTitle,
-        content: excerpt,
-        accent: BRAND.success,
-      })}
-      ${this.button('View Post', `${this.frontendUrl}/community/${postId}`, BRAND.success)}
-    `;
-    await this.sendEmail({
-      to,
-      subject: `Your Post in ${communityName} Was Approved`,
-      htmlBody: this.buildTemplate(content),
-      textBody: `Hi ${recipientName},\n\nYour post in ${communityName} has been approved and is now visible to the community.\n\nView it here: ${this.frontendUrl}/community/${postId}\n\nBest regards,\nGreat Deals Academy`,
-    });
-  }
-
-  /** [TO AUTHOR] Sent when their community post is rejected by a moderator. */
-  async sendPostRejectedEmail(opts: {
-    to: string;
-    recipientName: string;
-    communityName: string;
-    postTitle?: string | null;
-    excerpt: string;
-    reason?: string;
-  }): Promise<void> {
-    const { to, recipientName, communityName, postTitle, excerpt, reason } = opts;
-    const reasonBlock = reason
-      ? `<div style="background:${BRAND.body};border-left:4px solid ${BRAND.danger};padding:12px 16px;margin:0 0 20px;border-radius:0 4px 4px 0;color:${BRAND.textDark};">${this.escapeHtml(reason)}</div>`
-      : '';
-    const content = `
-      <p style="margin:0 0 6px;font-size:15px;">Hi <strong>${this.escapeHtml(recipientName)}</strong>,</p>
-      <p style="margin:0 0 22px;font-size:15px;color:${BRAND.textMuted};">Your post in <strong style="color:${BRAND.textDark};">${this.escapeHtml(communityName)}</strong> was <strong style="color:${BRAND.danger};">not approved</strong> by a moderator.</p>
-      ${this.postCard({
-        authorName: recipientName,
-        chip: `Not Approved · ${communityName}`,
-        title: postTitle,
-        content: excerpt,
-        accent: BRAND.danger,
-      })}
-      ${reasonBlock}
-      <p style="margin:0;color:${BRAND.textMuted};font-size:13px;">If you have questions, please reach out to a community moderator.</p>
-    `;
-    await this.sendEmail({
-      to,
-      subject: `Your Post in ${communityName} Was Not Approved`,
-      htmlBody: this.buildTemplate(content),
-      textBody: `Hi ${recipientName},\n\nYour post in ${communityName} was not approved by a moderator.${reason ? '\n\nReason: ' + reason : ''}\n\nBest regards,\nGreat Deals Academy`,
     });
   }
 

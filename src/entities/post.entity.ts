@@ -9,7 +9,7 @@ import {
   OneToMany,
   Index,
 } from 'typeorm';
-import { PostType, PostStatus, PraiseBadge } from '../common/enums';
+import { PostType, PraiseBadge } from '../common/enums';
 import { Community } from './community.entity';
 import { User } from './user.entity';
 import { PostAttachment } from './post-attachment.entity';
@@ -25,7 +25,6 @@ import { Comment } from './comment.entity';
 @Entity('posts')
 @Index(['communityId', 'createdAt'])
 @Index(['createdAt'])
-@Index(['status', 'createdAt'])
 export class Post {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -46,10 +45,6 @@ export class Post {
 
   @Column({ type: 'enum', enum: PostType })
   type: PostType;
-
-  /** Moderation status — new posts are PENDING until an admin approves. */
-  @Column({ type: 'enum', enum: PostStatus, default: PostStatus.PENDING })
-  status: PostStatus;
 
   @Column({ type: 'varchar', length: 200, nullable: true })
   title: string | null;

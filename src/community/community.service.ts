@@ -18,7 +18,7 @@ import { CommentMention } from '../entities/comment-mention.entity';
 import { PostPraised } from '../entities/post-praised.entity';
 import { PostAttachment } from '../entities/post-attachment.entity';
 import { User } from '../entities/user.entity';
-import { CommunityPrivacy, PostStatus, PostType } from '../common/enums';
+import { CommunityPrivacy, PostType } from '../common/enums';
 import { CommunitySanitizerService } from '../common/services/community-sanitizer.service';
 import { S3Service } from '../common/services/s3.service';
 import { CommunityAccessService } from '../communities/community-access.service';
@@ -28,7 +28,6 @@ import { CreatePostDto } from './dto/create-post.dto';
 import { UpdatePostDto } from './dto/update-post.dto';
 import { ReactDto, CreateCommentDto, VoteDto } from './dto/interaction.dto';
 import { FeedQueryDto, FeedScope, FeedSort } from './dto/feed-query.dto';
-import { ModerationQueryDto } from './dto/moderation-query.dto';
 
 interface FeedCursor {
   /** ISO createdAt of the last item (recent sort). */
@@ -113,113 +112,6 @@ export class CommunityService {
     return { posts, pinned, nextCursor };
   }
 
-  /**
-   * Admin moderation queue. Returns posts across ALL communities (no membership/
-   * privacy gating — admin-only at the controller), optionally filtered by status,
-   * newest first with keyset pagination. Mirrors the public feed response shape so
-   * the client can reuse its infinite-query plumbing.
-   */
-  async getModerationFeed(
-    user: User,
-    query: ModerationQueryDto,
-  ): Promise<FeedResponse> {
-    const qb = this.postRepo
-      .createQueryBuilder('p')
-      .select('p.id', 'id')
-      .addSelect('p.createdAt', 'createdAt')
-      .addSelect('0', 'reactionTotal')
-      .orderBy('p.createdAt', 'DESC')
-      .addOrderBy('p.id', 'DESC');
-
-    if (query.status) {
-      qb.andWhere('p.status = :status', { status: query.status });
-    }
-
-    const cursor = this.decodeCursor(query.cursor);
-    if (cursor?.c) {
-      qb.andWhere(`(p.createdAt < :cc OR (p.createdAt = :cc AND p.id < :cid))`, {
-        cc: cursor.c,
-        cid: cursor.id,
-      });
-    }
-    qb.limit(query.limit + 1);
-
-    const ordered = (await qb.getRawMany()).map(this.normalizeRow);
-    const hasMore = ordered.length > query.limit;
-    const pageRows = hasMore ? ordered.slice(0, query.limit) : ordered;
-
-    const posts = await this.loadAndMap(
-      pageRows.map((r) => r.id),
-      user,
-    );
-    const nextCursor =
-      hasMore && pageRows.length > 0
-        ? this.encodeCursor(pageRows[pageRows.length - 1], FeedSort.RECENT)
-        : null;
-
-    return { posts, pinned: [], nextCursor };
-  }
-
-  /** Admin-only: set a post's moderation status (approve / reject / re-pend). */
-  async setPostStatus(
-    user: User,
-    id: string,
-    status: PostStatus,
-  ): Promise<ApiPost> {
-    const post = await this.loadPost(id);
-    if (!post) throw new NotFoundException('Post not found');
-
-    const prevStatus = post.status;
-    post.status = status;
-    await this.postRepo.save(post);
-
-    if (status !== prevStatus) {
-      const community =
-        post.community ??
-        (await this.access.getCommunityOrThrow(post.communityId));
-
-      if (status === PostStatus.APPROVED) {
-        // First time the post becomes public: now fire the normal "new post"
-        // notifications (members live-update, mentions, praise).
-        const [mentions, praised] = await Promise.all([
-          this.mentionRepo.find({ where: { postId: id } }),
-          this.praisedRepo.find({ where: { postId: id } }),
-        ]);
-        void this.notifier.postCreated({
-          postId: id,
-          community,
-          authorId: post.authorId,
-          authorName: post.author?.fullName ?? '',
-          postExcerpt: post.body ?? post.title ?? '',
-          postTitle: post.title ?? null,
-          postCreatedAt: post.createdAt,
-          mentionedUserIds: mentions.map((m) => m.userId),
-          praisedUserIds:
-            post.type === PostType.PRAISE ? praised.map((p) => p.userId) : [],
-        });
-        void this.notifier.postApproved({
-          postId: id,
-          community,
-          authorId: post.authorId,
-          authorName: post.author?.fullName ?? '',
-          postTitle: post.title ?? null,
-          postExcerpt: post.body ?? post.title ?? '',
-        });
-      } else if (status === PostStatus.REJECTED) {
-        void this.notifier.postRejected({
-          postId: id,
-          community,
-          authorId: post.authorId,
-          authorName: post.author?.fullName ?? '',
-          postTitle: post.title ?? null,
-          postExcerpt: post.body ?? post.title ?? '',
-        });
-      }
-    }
-
-    return this.mapper.mapOne(post, user.id);
-  }
-
   async getPost(user: User, id: string): Promise<ApiPost> {
     const post = await this.loadPost(id);
     if (!post) throw new NotFoundException('Post not found');
@@ -245,7 +137,6 @@ export class CommunityService {
         communityId: community.id,
         authorId: user.id, // author is ALWAYS the authenticated user
         type: dto.type,
-        status: PostStatus.PENDING, // awaits admin approval before going public
         title: dto.title?.trim() || null,
         body: body || null,
         bodyHtml: bodyHtml || null,
@@ -257,13 +148,16 @@ export class CommunityService {
 
     await this.persistPostChildren(post.id, dto);
 
-    // The post is PENDING — don't broadcast to members/mentions/praise yet. Tell
-    // the author it's pending and notify admins. The broadcast happens on approval.
-    void this.notifier.postSubmittedForApproval({
+    void this.notifier.postCreated({
       postId: post.id,
       community,
       authorId: user.id,
       authorName: user.fullName,
+      postExcerpt: post.body ?? post.title ?? '',
+      postTitle: post.title ?? null,
+      postCreatedAt: post.createdAt,
+      mentionedUserIds: dto.mentions ?? [],
+      praisedUserIds: dto.type === PostType.PRAISE ? dto.praisedPeople ?? [] : [],
     });
 
     const reloaded = await this.loadPost(post.id);
@@ -676,14 +570,6 @@ export class CommunityService {
       );
 
     this.applyScopeAndVisibility(qb, user, query);
-
-    // Moderation gate: the public feed only shows approved posts. Authors still
-    // see their own pending/rejected posts so a submission never silently
-    // vanishes. The admin moderation queue uses getModerationFeed instead.
-    qb.andWhere('(p.status = :approvedStatus OR p."authorId" = :selfId)', {
-      approvedStatus: PostStatus.APPROVED,
-      selfId: user.id,
-    });
 
     if (query.authorId) {
       qb.andWhere('p."authorId" = :authorId', { authorId: query.authorId });

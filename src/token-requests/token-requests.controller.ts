@@ -18,6 +18,7 @@ import { CreateLearningSubsidyRequestDto } from './dto/create-learning-subsidy-r
 import { RejectTokenRequestDto } from './dto/reject-token-request.dto';
 import { ResubmitTokenRequestDto } from './dto/resubmit-token-request.dto';
 import { BookSessionDto } from './dto/book-session.dto';
+import { RequestCancelSessionDto } from './dto/request-cancel-session.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { User } from '../entities/user.entity';
@@ -380,8 +381,9 @@ export class TokenRequestsController {
 
   /**
    * DELETE /token-requests/:id/sessions/:sessionId
-   * Cancel a scheduled session. Releases the availability slot.
-   * Either the employee or the coach can cancel.
+   * Withdraw a not-yet-confirmed booking. Releases the availability slot.
+   * Either the employee or the coach can do this unilaterally — for an
+   * already-confirmed (scheduled) session, use request-cancel instead.
    */
   @Delete(':id/sessions/:sessionId')
   cancelSession(
@@ -390,5 +392,48 @@ export class TokenRequestsController {
     @CurrentUser() user: User,
   ) {
     return this.coachingSessionsService.cancelSession(id, sessionId, user.id);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/request-cancel
+   * Either party requests to cancel a confirmed (scheduled) session. Doesn't
+   * cancel immediately — the other party must approve or decline it.
+   * Body: { reason?: string }
+   */
+  @Patch(':id/sessions/:sessionId/request-cancel')
+  requestCancelSession(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+    @Body() dto: RequestCancelSessionDto,
+  ) {
+    return this.coachingSessionsService.requestCancelSession(id, sessionId, user.id, dto);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/approve-cancel
+   * The party who did NOT request cancellation approves it — finalizes to cancelled.
+   */
+  @Patch(':id/sessions/:sessionId/approve-cancel')
+  approveCancelSession(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.coachingSessionsService.approveCancelSession(id, sessionId, user.id);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/decline-cancel
+   * Decline a pending cancellation request (or withdraw one you made yourself)
+   * — reverts the session back to scheduled.
+   */
+  @Patch(':id/sessions/:sessionId/decline-cancel')
+  declineCancelSession(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.coachingSessionsService.declineCancelSession(id, sessionId, user.id);
   }
 }

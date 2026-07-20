@@ -16,7 +16,7 @@ import { TokenRequest } from '../entities/token-request.entity';
 import { CoachingSession } from '../entities/coaching-session.entity';
 import { CoachAvailability } from '../entities/coach-availability.entity';
 import { DevelopmentOption } from '../entities/development-option.entity';
-import { CommunityRole, PostStatus, UserRole } from '../common/enums';
+import { CommunityRole, UserRole } from '../common/enums';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { EmailService } from '../common/services/email.service';
 import { S3Service } from '../common/services/s3.service';
@@ -80,9 +80,7 @@ export class UsersService {
 
     const [postsCount, followersCount, followingCount, mine] =
       await Promise.all([
-        this.postRepo.count({
-          where: { authorId: targetId, status: PostStatus.APPROVED },
-        }),
+        this.postRepo.count({ where: { authorId: targetId } }),
         this.followRepo.count({ where: { followingId: targetId } }),
         this.followRepo.count({ where: { followerId: targetId } }),
         this.followRepo.findOne({

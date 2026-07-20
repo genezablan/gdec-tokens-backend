@@ -50,23 +50,38 @@ export class CoachAvailabilityService {
     const coach = await this.userRepo.findOne({ where: { id: coachId } });
     if (!coach) throw new NotFoundException('Coach not found');
     return {
-      coachingDays: coach.coachingDays ?? [],
-      coachingStartTime: coach.coachingStartTime ?? null,
-      coachingEndTime: coach.coachingEndTime ?? null,
+      coachingWeeklyHours: coach.coachingWeeklyHours ?? [],
       coachingSessionMinutes: coach.coachingSessionMinutes ?? 60,
     };
   }
 
   async updateCoachingHours(coachId: string, dto: UpdateCoachingHoursDto) {
-    if (dto.coachingStartTime && dto.coachingEndTime && dto.coachingStartTime >= dto.coachingEndTime) {
-      throw new BadRequestException('coachingStartTime must be before coachingEndTime');
+    if (dto.coachingWeeklyHours !== undefined) {
+      const byDay = new Map<number, { startTime: string; endTime: string }[]>();
+      for (const window of dto.coachingWeeklyHours) {
+        if (window.startTime >= window.endTime) {
+          throw new BadRequestException(
+            `startTime must be before endTime for day ${window.day}`,
+          );
+        }
+        if (!byDay.has(window.day)) byDay.set(window.day, []);
+        byDay.get(window.day)!.push(window);
+      }
+      // A day can have several windows (e.g. 9–12 and 1–5); they just can't overlap.
+      for (const [day, windows] of byDay) {
+        const sorted = [...windows].sort((a, b) => a.startTime.localeCompare(b.startTime));
+        for (let i = 0; i < sorted.length - 1; i++) {
+          if (sorted[i].endTime > sorted[i + 1].startTime) {
+            throw new BadRequestException(`Coaching windows for day ${day} overlap`);
+          }
+        }
+      }
     }
+
     const coach = await this.userRepo.findOne({ where: { id: coachId } });
     if (!coach) throw new NotFoundException('Coach not found');
 
-    if (dto.coachingDays !== undefined) coach.coachingDays = dto.coachingDays;
-    if (dto.coachingStartTime !== undefined) coach.coachingStartTime = dto.coachingStartTime;
-    if (dto.coachingEndTime !== undefined) coach.coachingEndTime = dto.coachingEndTime;
+    if (dto.coachingWeeklyHours !== undefined) coach.coachingWeeklyHours = dto.coachingWeeklyHours;
     if (dto.coachingSessionMinutes !== undefined) coach.coachingSessionMinutes = dto.coachingSessionMinutes;
     await this.userRepo.save(coach);
     return this.getCoachingHours(coachId);
@@ -87,11 +102,7 @@ export class CoachAvailabilityService {
     const coach = await this.userRepo.findOne({ where: { id: coachId } });
     if (!coach) throw new NotFoundException('Coach not found');
 
-    const hasHours =
-      !!coach.coachingDays?.length &&
-      !!coach.coachingStartTime &&
-      !!coach.coachingEndTime &&
-      !!coach.coachingSessionMinutes;
+    const hasHours = !!coach.coachingWeeklyHours?.length && !!coach.coachingSessionMinutes;
     const connected = await this.calendarService.isConnected(coachId);
     if (!hasHours || !connected) return { connected, hasHours, slots: [] };
 
@@ -118,9 +129,11 @@ export class CoachAvailabilityService {
       end: new Date(new Date(s.scheduledAt).getTime() + stepMs),
     }));
 
-    const [sh, sm] = (coach.coachingStartTime as string).split(':').map(Number);
-    const [eh, em] = (coach.coachingEndTime as string).split(':').map(Number);
-    const days = coach.coachingDays as number[];
+    const windowsByDay = new Map<number, { startTime: string; endTime: string }[]>();
+    for (const w of coach.coachingWeeklyHours ?? []) {
+      if (!windowsByDay.has(w.day)) windowsByDay.set(w.day, []);
+      windowsByDay.get(w.day)!.push(w);
+    }
 
     const overlaps = (s: Date, e: Date, list: { start: Date; end: Date }[]) =>
       list.some((b) => s < b.end && e > b.start);
@@ -128,30 +141,36 @@ export class CoachAvailabilityService {
     const slots: BookableSlot[] = [];
     for (let i = 0; i < BOOKING_HORIZON_DAYS; i++) {
       const day = new Date(from.getTime() + i * 86400000);
-      if (!days.includes(day.getDay())) continue;
+      const dayWindows = windowsByDay.get(day.getDay());
+      if (!dayWindows) continue;
 
-      const windowEnd = new Date(day);
-      windowEnd.setHours(eh, em, 0, 0);
-      let slotStart = new Date(day);
-      slotStart.setHours(sh, sm, 0, 0);
+      for (const window of dayWindows) {
+        const [sh, sm] = window.startTime.split(':').map(Number);
+        const [eh, em] = window.endTime.split(':').map(Number);
 
-      while (slotStart.getTime() + stepMs <= windowEnd.getTime() + 1) {
-        const slotEnd = new Date(slotStart.getTime() + stepMs);
-        if (
-          slotStart > now &&
-          !overlaps(slotStart, slotEnd, busy) &&
-          !overlaps(slotStart, slotEnd, booked)
-        ) {
-          slots.push({
-            id: `${ymd(slotStart)}T${hhmm(slotStart)}`,
-            availableDate: ymd(slotStart),
-            startTime: hhmm(slotStart),
-            endTime: hhmm(slotEnd),
-            startDateTime: slotStart.toISOString(),
-            endDateTime: slotEnd.toISOString(),
-          });
+        const windowEnd = new Date(day);
+        windowEnd.setHours(eh, em, 0, 0);
+        let slotStart = new Date(day);
+        slotStart.setHours(sh, sm, 0, 0);
+
+        while (slotStart.getTime() + stepMs <= windowEnd.getTime() + 1) {
+          const slotEnd = new Date(slotStart.getTime() + stepMs);
+          if (
+            slotStart > now &&
+            !overlaps(slotStart, slotEnd, busy) &&
+            !overlaps(slotStart, slotEnd, booked)
+          ) {
+            slots.push({
+              id: `${ymd(slotStart)}T${hhmm(slotStart)}`,
+              availableDate: ymd(slotStart),
+              startTime: hhmm(slotStart),
+              endTime: hhmm(slotEnd),
+              startDateTime: slotStart.toISOString(),
+              endDateTime: slotEnd.toISOString(),
+            });
+          }
+          slotStart = slotEnd;
         }
-        slotStart = slotEnd;
       }
     }
 

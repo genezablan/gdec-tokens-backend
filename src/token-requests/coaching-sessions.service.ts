@@ -17,6 +17,7 @@ import {
   RequestStatus,
 } from '../common/enums';
 import { BookSessionDto } from './dto/book-session.dto';
+import { RequestCancelSessionDto } from './dto/request-cancel-session.dto';
 import { EmailService } from '../common/services/email.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../entities/notification.entity';
@@ -649,12 +650,15 @@ export class CoachingSessionsService {
     return saved;
   }
 
-  // ─── Cancel a session ─────────────────────────────────────────────────────────
+  // ─── Cancel a pending (unconfirmed) booking ───────────────────────────────────
 
   /**
-   * Cancel a scheduled session.
-   * Either the employee or the coach can cancel.
-   * The availability slot is released back to unbooked.
+   * Withdraw a booking that hasn't been confirmed yet. Either the employee or
+   * the coach can do this unilaterally — nothing has been mutually committed
+   * to yet (no calendar sync), so no consent step is needed here. This is the
+   * employee-side counterpart to the coach's declineSession(); for an already
+   * SCHEDULED (coach-confirmed) session, use requestCancelSession() instead,
+   * which requires the other party's approval.
    */
   async cancelSession(
     requestId: string,
@@ -666,28 +670,152 @@ export class CoachingSessionsService {
     });
     if (!session) throw new NotFoundException('Session not found');
 
-    const request = await this.requestRepo.findOne({
-      where: { id: requestId },
-    });
-    const formData = request?.formData as Record<string, unknown>;
-    const coachId = formData?.coachId as string;
-
-    if (callerId !== session.employeeId && callerId !== coachId) {
+    if (callerId !== session.employeeId && callerId !== session.coachId) {
       throw new ForbiddenException(
         'Only the employee or coach can cancel a session',
       );
     }
-    const cancellable = [
-      CoachingSessionStatus.PENDING_COACH_APPROVAL,
-      CoachingSessionStatus.SCHEDULED,
-    ];
-    if (!cancellable.includes(session.status)) {
+    if (session.status !== CoachingSessionStatus.PENDING_COACH_APPROVAL) {
       throw new BadRequestException(
-        `Cannot cancel a session that is already ${session.status}`,
+        session.status === CoachingSessionStatus.SCHEDULED
+          ? 'This session is already confirmed — request cancellation instead, which requires the other party to approve it'
+          : `Cannot cancel a session that is already ${session.status}`,
       );
     }
 
     session.status = CoachingSessionStatus.CANCELLED;
+
+    // Release the availability slot so it can be rebooked
+    if (session.availabilityId) {
+      await this.availabilityRepo.update(session.availabilityId, {
+        isBooked: false,
+      });
+    }
+
+    const saved = await this.sessionRepo.save(session);
+
+    // Notify whichever party didn't initiate the cancellation.
+    const otherPartyId =
+      callerId === session.employeeId ? session.coachId : session.employeeId;
+    const [caller, otherParty] = await Promise.all([
+      this.userRepo.findOne({ where: { id: callerId } }),
+      this.userRepo.findOne({ where: { id: otherPartyId } }),
+    ]);
+    if (caller && otherParty) {
+      this.notificationsService
+        .create(otherPartyId, {
+          title: 'Session Booking Cancelled',
+          message: `${caller.fullName} cancelled the pending Session ${session.sessionNumber} booking.`,
+          type: NotificationType.WARNING,
+          requestId,
+          metadata: { deeplink: `/coaching/${requestId}/sessions` },
+        })
+        .catch(() => {});
+    }
+
+    return saved;
+  }
+
+  // ─── Cancel a scheduled session (mutual consent) ──────────────────────────────
+
+  /**
+   * Either party requests to cancel a SCHEDULED (coach-confirmed) session.
+   * Doesn't cancel immediately — moves to PENDING_CANCELLATION and notifies
+   * the other party, who must approveCancelSession() or declineCancelSession().
+   */
+  async requestCancelSession(
+    requestId: string,
+    sessionId: string,
+    callerId: string,
+    dto: RequestCancelSessionDto,
+  ): Promise<CoachingSession> {
+    const session = await this.sessionRepo.findOne({
+      where: { id: sessionId, tokenRequestId: requestId },
+    });
+    if (!session) throw new NotFoundException('Session not found');
+    if (callerId !== session.employeeId && callerId !== session.coachId) {
+      throw new ForbiddenException(
+        'Only the employee or coach can request to cancel a session',
+      );
+    }
+    if (session.status !== CoachingSessionStatus.SCHEDULED) {
+      throw new BadRequestException(
+        `Cannot request cancellation — session is ${session.status}`,
+      );
+    }
+
+    session.statusBeforeCancellation = session.status;
+    session.status = CoachingSessionStatus.PENDING_CANCELLATION;
+    session.cancelRequestedById = callerId;
+    session.cancelReason = dto.reason?.trim() || null;
+    const saved = await this.sessionRepo.save(session);
+
+    const otherPartyId =
+      callerId === session.employeeId ? session.coachId : session.employeeId;
+    const [requester, otherParty] = await Promise.all([
+      this.userRepo.findOne({ where: { id: callerId } }),
+      this.userRepo.findOne({ where: { id: otherPartyId } }),
+    ]);
+    if (requester && otherParty) {
+      this.emailService
+        .sendSessionCancelRequestedNotification({
+          recipientEmail: otherParty.email,
+          recipientName: otherParty.fullName,
+          requesterName: requester.fullName,
+          sessionNumber: session.sessionNumber,
+          scheduledAt: session.scheduledAt,
+          reason: session.cancelReason,
+          requestId,
+        })
+        .catch(() => {});
+
+      this.notificationsService
+        .create(otherPartyId, {
+          title: 'Session Cancellation Requested',
+          message: `${requester.fullName} requested to cancel Session ${session.sessionNumber}. Please approve or keep the session.`,
+          type: NotificationType.WARNING,
+          requestId,
+          metadata: { deeplink: `/coaching/${requestId}/sessions` },
+        })
+        .catch(() => {});
+    }
+
+    return saved;
+  }
+
+  /**
+   * The other party approves a pending cancellation request — finalizes it.
+   * Only the party who did NOT request the cancellation can approve it.
+   */
+  async approveCancelSession(
+    requestId: string,
+    sessionId: string,
+    callerId: string,
+  ): Promise<CoachingSession> {
+    const session = await this.sessionRepo.findOne({
+      where: { id: sessionId, tokenRequestId: requestId },
+    });
+    if (!session) throw new NotFoundException('Session not found');
+    if (session.status !== CoachingSessionStatus.PENDING_CANCELLATION) {
+      throw new BadRequestException(
+        'This session has no pending cancellation request',
+      );
+    }
+    if (callerId !== session.employeeId && callerId !== session.coachId) {
+      throw new ForbiddenException(
+        'Only the employee or coach can respond to this cancellation request',
+      );
+    }
+    if (callerId === session.cancelRequestedById) {
+      throw new ForbiddenException(
+        "Waiting for the other party to respond to your cancellation request",
+      );
+    }
+
+    const requesterId = session.cancelRequestedById;
+
+    session.status = CoachingSessionStatus.CANCELLED;
+    session.statusBeforeCancellation = null;
 
     // Remove the calendar event (best-effort) and clear its references.
     await this.removeSessionFromCalendar(session);
@@ -702,7 +830,106 @@ export class CoachingSessionsService {
       });
     }
 
-    return this.sessionRepo.save(session);
+    const saved = await this.sessionRepo.save(session);
+
+    if (requesterId) {
+      const [requester, approver] = await Promise.all([
+        this.userRepo.findOne({ where: { id: requesterId } }),
+        this.userRepo.findOne({ where: { id: callerId } }),
+      ]);
+      if (requester && approver) {
+        this.emailService
+          .sendSessionCancelApprovedNotification({
+            recipientEmail: requester.email,
+            recipientName: requester.fullName,
+            approverName: approver.fullName,
+            sessionNumber: session.sessionNumber,
+            scheduledAt: session.scheduledAt,
+          })
+          .catch(() => {});
+
+        this.notificationsService
+          .create(requesterId, {
+            title: 'Session Cancelled',
+            message: `${approver.fullName} approved your request to cancel Session ${session.sessionNumber}.`,
+            type: NotificationType.INFO,
+            requestId,
+            metadata: { deeplink: `/coaching/${requestId}/sessions` },
+          })
+          .catch(() => {});
+      }
+    }
+
+    return saved;
+  }
+
+  /**
+   * Decline a pending cancellation request — reverts to the prior status.
+   * Callable by the other party (declining the request) or by the requester
+   * themself (withdrawing it before the other party responds). Only notifies
+   * the requester when the OTHER party declined — no need to notify yourself
+   * that you withdrew your own request.
+   */
+  async declineCancelSession(
+    requestId: string,
+    sessionId: string,
+    callerId: string,
+  ): Promise<CoachingSession> {
+    const session = await this.sessionRepo.findOne({
+      where: { id: sessionId, tokenRequestId: requestId },
+    });
+    if (!session) throw new NotFoundException('Session not found');
+    if (session.status !== CoachingSessionStatus.PENDING_CANCELLATION) {
+      throw new BadRequestException(
+        'This session has no pending cancellation request',
+      );
+    }
+    if (callerId !== session.employeeId && callerId !== session.coachId) {
+      throw new ForbiddenException(
+        'Only the employee or coach can respond to this cancellation request',
+      );
+    }
+
+    const requesterId = session.cancelRequestedById;
+    const wasWithdrawnByRequester = callerId === requesterId;
+
+    session.status =
+      session.statusBeforeCancellation ?? CoachingSessionStatus.SCHEDULED;
+    session.statusBeforeCancellation = null;
+    session.cancelRequestedById = null;
+    session.cancelReason = null;
+    const saved = await this.sessionRepo.save(session);
+
+    if (!wasWithdrawnByRequester && requesterId) {
+      const [requester, decliner] = await Promise.all([
+        this.userRepo.findOne({ where: { id: requesterId } }),
+        this.userRepo.findOne({ where: { id: callerId } }),
+      ]);
+      if (requester && decliner) {
+        this.emailService
+          .sendSessionCancelDeclinedNotification({
+            recipientEmail: requester.email,
+            recipientName: requester.fullName,
+            declinerName: decliner.fullName,
+            sessionNumber: session.sessionNumber,
+            scheduledAt: session.scheduledAt,
+            requestId,
+          })
+          .catch(() => {});
+
+        this.notificationsService
+          .create(requesterId, {
+            title: 'Cancellation Request Declined',
+            message: `${decliner.fullName} declined your request to cancel Session ${session.sessionNumber}. The session remains scheduled.`,
+            type: NotificationType.INFO,
+            requestId,
+            metadata: { deeplink: `/coaching/${requestId}/sessions` },
+          })
+          .catch(() => {});
+      }
+    }
+
+    return saved;
   }
 
   // ─── Mark no-show ─────────────────────────────────────────────────────────────

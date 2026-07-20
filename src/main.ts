@@ -29,7 +29,7 @@ async function bootstrap() {
     }),
   );
 
-  // Strip @Exclude() fields (e.g. password) from all serialized responses
+  // Strip @Exclude() fields (e.g. password) from all serialized responses.
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
 
   // Global prefix

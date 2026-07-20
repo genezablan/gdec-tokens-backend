@@ -82,6 +82,24 @@ export class CoachingSession {
   @Column({ type: 'text', nullable: true })
   sessionNotes: string | null;
 
+  // ─── Mutual-consent cancellation ────────────────────────────────────────────
+
+  /** Who asked to cancel — set while status = PENDING_CANCELLATION. */
+  @Column({ nullable: true })
+  cancelRequestedById: string | null;
+
+  @ManyToOne(() => User, { eager: false, nullable: true })
+  @JoinColumn({ name: 'cancelRequestedById' })
+  cancelRequestedBy: User | null;
+
+  /** Optional note from the requester explaining why. */
+  @Column({ type: 'text', nullable: true })
+  cancelReason: string | null;
+
+  /** Status to restore to if the other party declines the cancellation request. */
+  @Column({ type: 'enum', enum: CoachingSessionStatus, nullable: true })
+  statusBeforeCancellation: CoachingSessionStatus | null;
+
   // ─── Calendar sync (Outlook / Microsoft Graph) ─────────────────────────────────
 
   /** Microsoft Graph event id, set when the session is pushed to the coach's calendar. */

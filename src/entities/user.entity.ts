@@ -134,17 +134,12 @@ export class User {
   // Bookable slots are generated from this window minus the coach's Outlook busy
   // times. Null until the coach configures their coaching hours.
 
-  /** Days of week the coach offers coaching (0=Sun … 6=Sat). */
-  @Column({ type: 'int', array: true, nullable: true })
-  coachingDays: number[] | null;
-
-  /** Daily coaching window start, "HH:MM". */
-  @Column({ type: 'time', nullable: true })
-  coachingStartTime: string | null;
-
-  /** Daily coaching window end, "HH:MM". */
-  @Column({ type: 'time', nullable: true })
-  coachingEndTime: string | null;
+  /**
+   * Per-day coaching windows, e.g. [{ day: 1, startTime: "09:00", endTime: "12:00" }].
+   * `day` is 0=Sun … 6=Sat. A day may have several non-overlapping windows.
+   */
+  @Column({ type: 'jsonb', nullable: true })
+  coachingWeeklyHours: { day: number; startTime: string; endTime: string }[] | null;
 
   /** Length of one coaching session in minutes (slot granularity). */
   @Column({ type: 'int', nullable: true })

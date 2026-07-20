@@ -48,6 +48,7 @@ export enum RequestStatus {
 export enum CoachingSessionStatus {
   PENDING_COACH_APPROVAL = 'pending_coach_approval', // Booked by employee, awaiting coach confirmation
   SCHEDULED = 'scheduled',    // Coach confirmed — session is locked in
+  PENDING_CANCELLATION = 'pending_cancellation', // Cancel requested by one party, awaiting the other's response
   COMPLETED = 'completed',    // Coach marked the session as done
   NO_SHOW = 'no_show',        // Employee did not attend
   CANCELLED = 'cancelled',    // Session was cancelled
