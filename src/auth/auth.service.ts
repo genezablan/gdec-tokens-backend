@@ -24,6 +24,9 @@ import { AuthResponse, JwtPayload } from './interfaces/jwt-payload.interface';
 import { EmailService } from '../common/services/email.service';
 import { S3Service } from '../common/services/s3.service';
 
+/** A gap between heartbeats larger than this is treated as idle/away, not active usage. */
+const HEARTBEAT_IDLE_THRESHOLD_SECONDS = 5 * 60;
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -37,7 +40,10 @@ export class AuthService {
     private s3Service: S3Service,
   ) {}
 
-  async validateUser(identifier: string, password: string): Promise<User | null> {
+  async validateUser(
+    identifier: string,
+    password: string,
+  ): Promise<User | null> {
     // Find user by email only
     const user = await this.userRepository.findOne({
       where: { email: identifier },
@@ -49,7 +55,9 @@ export class AuthService {
 
     // Check if account is pending HR approval
     if (user.isPendingApproval) {
-      throw new UnauthorizedException('Your account is pending HR approval. You will be notified by email once approved.');
+      throw new UnauthorizedException(
+        'Your account is pending HR approval. You will be notified by email once approved.',
+      );
     }
 
     // Check if user is active
@@ -73,11 +81,13 @@ export class AuthService {
   async login(user: User): Promise<AuthResponse> {
     // Record the login for engagement analytics (last-login + append-only event log).
     // Best-effort: a tracking failure must never block a valid login.
+    let loginEventId: string | null = null;
     try {
       await this.userRepository.update(user.id, { lastLoginAt: new Date() });
-      await this.loginEventRepository.save(
+      const event = await this.loginEventRepository.save(
         this.loginEventRepository.create({ userId: user.id }),
       );
+      loginEventId = event.id;
     } catch {
       // swallow — analytics tracking is non-critical
     }
@@ -98,12 +108,14 @@ export class AuthService {
     const accessToken = this.jwtService.sign(payload as any);
 
     const refreshToken = this.jwtService.sign(refreshPayload as any, {
-      expiresIn: (this.configService.get<string>('JWT_REFRESH_EXPIRATION') || '7d') as any,
+      expiresIn: (this.configService.get<string>('JWT_REFRESH_EXPIRATION') ||
+        '7d') as any,
     });
 
     return {
       accessToken,
       refreshToken,
+      loginEventId,
       user: {
         id: user.id,
         employeeId: user.employeeId,
@@ -117,6 +129,39 @@ export class AuthService {
       },
       requiresPasswordChange: !user.isPasswordChanged,
     };
+  }
+
+  /**
+   * Extends the session-duration clock for a login event. The frontend pings
+   * this on an interval while the app is open/focused. If the gap since the
+   * last heartbeat (or login, for the first ping) exceeds the idle threshold,
+   * the elapsed time is treated as idle/away and not counted — this keeps a
+   * laptop left open overnight from inflating usage hours.
+   */
+  async heartbeat(
+    userId: string,
+    loginEventId: string,
+  ): Promise<{ durationSeconds: number }> {
+    const event = await this.loginEventRepository.findOne({
+      where: { id: loginEventId, userId },
+    });
+    if (!event) {
+      throw new NotFoundException('Login session not found');
+    }
+
+    const now = new Date();
+    const reference = event.lastHeartbeatAt ?? event.createdAt;
+    const gapSeconds = Math.round(
+      (now.getTime() - new Date(reference).getTime()) / 1000,
+    );
+
+    if (gapSeconds > 0 && gapSeconds <= HEARTBEAT_IDLE_THRESHOLD_SECONDS) {
+      event.durationSeconds += gapSeconds;
+    }
+    event.lastHeartbeatAt = now;
+
+    await this.loginEventRepository.save(event);
+    return { durationSeconds: event.durationSeconds };
   }
 
   async changePassword(
@@ -171,7 +216,8 @@ export class AuthService {
     let user = await this.userRepository.findOne({
       where: {
         providerId,
-        authProvider: provider === 'google' ? AuthProvider.GOOGLE : AuthProvider.MICROSOFT,
+        authProvider:
+          provider === 'google' ? AuthProvider.GOOGLE : AuthProvider.MICROSOFT,
       },
     });
 
@@ -192,8 +238,9 @@ export class AuthService {
 
     // Link OAuth account to existing user
     user.providerId = providerId;
-    user.authProvider = provider === 'google' ? AuthProvider.GOOGLE : AuthProvider.MICROSOFT;
-    
+    user.authProvider =
+      provider === 'google' ? AuthProvider.GOOGLE : AuthProvider.MICROSOFT;
+
     // Update name if provided and empty
     if (firstName && !user.firstName) {
       user.firstName = firstName;
@@ -305,9 +352,13 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto): Promise<{ message: string }> {
-    const existing = await this.userRepository.findOne({ where: { email: dto.email } });
+    const existing = await this.userRepository.findOne({
+      where: { email: dto.email },
+    });
     if (existing) {
-      throw new BadRequestException('An account with this email already exists');
+      throw new BadRequestException(
+        'An account with this email already exists',
+      );
     }
 
     // Verify the supervisor exists
@@ -335,15 +386,18 @@ export class AuthService {
       contact: dto.contact,
       roles: [UserRole.EMPLOYEE],
       employeeStatus: EmployeeStatus.PROBATIONARY,
-      isActive: false,          // Cannot log in until HR approves
-      isPendingApproval: true,  // Flags account for HR review
-      isPasswordChanged: true,  // They set their own password at registration
+      isActive: false, // Cannot log in until HR approves
+      isPendingApproval: true, // Flags account for HR review
+      isPasswordChanged: true, // They set their own password at registration
     });
 
     await this.userRepository.save(user);
 
     this.emailService
-      .sendRegistrationSubmittedEmail({ email: user.email, name: user.fullName })
+      .sendRegistrationSubmittedEmail({
+        email: user.email,
+        name: user.fullName,
+      })
       .catch(() => {});
 
     const hrUsers = await this.userRepository
@@ -364,12 +418,19 @@ export class AuthService {
         .catch(() => {});
     }
 
-    return { message: 'Registration submitted. Your account is pending HR approval. You will receive an email once your account is approved.' };
+    return {
+      message:
+        'Registration submitted. Your account is pending HR approval. You will receive an email once your account is approved.',
+    };
   }
 
   async forgotPassword(dto: ForgotPasswordDto): Promise<{ message: string }> {
-    const user = await this.userRepository.findOne({ where: { email: dto.email } });
-    const silentSuccess = { message: 'If that email exists, a reset link has been sent.' };
+    const user = await this.userRepository.findOne({
+      where: { email: dto.email },
+    });
+    const silentSuccess = {
+      message: 'If that email exists, a reset link has been sent.',
+    };
 
     if (!user || !user.isActive) return silentSuccess;
 
@@ -381,7 +442,8 @@ export class AuthService {
     user.passwordResetExpiry = expiry;
     await this.userRepository.save(user);
 
-    const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
+    const frontendUrl =
+      this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
     const resetLink = `${frontendUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
 
     try {
@@ -399,7 +461,9 @@ export class AuthService {
   }
 
   async resetPassword(dto: ResetPasswordDto): Promise<{ message: string }> {
-    const user = await this.userRepository.findOne({ where: { email: dto.email } });
+    const user = await this.userRepository.findOne({
+      where: { email: dto.email },
+    });
 
     if (!user || !user.passwordResetToken || !user.passwordResetExpiry) {
       throw new BadRequestException('Invalid or expired reset token');
@@ -435,7 +499,8 @@ export class AuthService {
     }
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password, passwordResetToken, passwordResetExpiry, ...safeUser } = user;
+    const { password, passwordResetToken, passwordResetExpiry, ...safeUser } =
+      user;
     const resolved = await this.resolveProfilePicture(safeUser);
     return resolved as Omit<User, 'password'>;
   }
@@ -493,7 +558,8 @@ export class AuthService {
     await this.userRepository.save(user);
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password, passwordResetToken, passwordResetExpiry, ...safeUser } = user;
+    const { password, passwordResetToken, passwordResetExpiry, ...safeUser } =
+      user;
     const resolved = await this.resolveProfilePicture(safeUser);
     return resolved as Omit<User, 'password'>;
   }
@@ -502,11 +568,16 @@ export class AuthService {
    * Replaces the stored S3 key in `profilePicture` with a short-lived (15 min) presigned GET URL.
    * If the field is null or already a full URL (legacy), it is returned as-is.
    */
-  private async resolveProfilePicture<T extends { profilePicture?: string | null }>(user: T): Promise<T> {
+  private async resolveProfilePicture<
+    T extends { profilePicture?: string | null },
+  >(user: T): Promise<T> {
     if (!user.profilePicture || user.profilePicture.startsWith('http')) {
       return user;
     }
-    const signedUrl = await this.s3Service.getPresignedDownloadUrl(user.profilePicture, 900);
+    const signedUrl = await this.s3Service.getPresignedDownloadUrl(
+      user.profilePicture,
+      900,
+    );
     return { ...user, profilePicture: signedUrl };
   }
 }

@@ -14,7 +14,14 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
-import { ChangePasswordDto, ForgotPasswordDto, RegisterDto, ResetPasswordDto, UpdateProfileDto } from './dto';
+import {
+  ChangePasswordDto,
+  ForgotPasswordDto,
+  HeartbeatDto,
+  RegisterDto,
+  ResetPasswordDto,
+  UpdateProfileDto,
+} from './dto';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { GoogleAuthGuard } from './guards/google-auth.guard';
@@ -60,6 +67,21 @@ export class AuthController {
     return this.authService.login(req.user);
   }
 
+  /**
+   * POST /auth/heartbeat — pinged periodically by the frontend while the app
+   * is open/focused to build up real session-duration data. Best-effort by
+   * design: the frontend should not surface failures to the user.
+   */
+  @Post('heartbeat')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async heartbeat(
+    @CurrentUser('id') userId: string,
+    @Body() dto: HeartbeatDto,
+  ) {
+    return this.authService.heartbeat(userId, dto.loginEventId);
+  }
+
   @Patch('change-password')
   @UseGuards(JwtAuthGuard)
   async changePassword(
@@ -93,7 +115,11 @@ export class AuthController {
     @Query('filename') filename: string,
     @Query('contentType') contentType: string,
   ) {
-    return this.authService.generateProfilePictureUploadUrl(userId, filename, contentType);
+    return this.authService.generateProfilePictureUploadUrl(
+      userId,
+      filename,
+      contentType,
+    );
   }
 
   @Patch('profile')
@@ -131,7 +157,8 @@ export class AuthController {
   @Get('google/callback')
   @UseGuards(GoogleAuthGuard)
   async googleAuthCallback(@Req() req, @Res() res: Response) {
-    const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
+    const frontendUrl =
+      this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
     try {
       const { providerId, email, firstName, lastName } = req.user;
       const user = await this.authService.validateOAuthUser(
@@ -145,7 +172,9 @@ export class AuthController {
       const token = authResponse.accessToken;
       return res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
     } catch {
-      return res.redirect(`${frontendUrl}/auth/error?message=Account+not+found.+Please+contact+HR.`);
+      return res.redirect(
+        `${frontendUrl}/auth/error?message=Account+not+found.+Please+contact+HR.`,
+      );
     }
   }
 
@@ -161,9 +190,17 @@ export class AuthController {
   @Get('microsoft/callback')
   @UseGuards(MicrosoftAuthGuard)
   async microsoftAuthCallback(@Req() req, @Res() res: Response) {
-    const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
+    const frontendUrl =
+      this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
     try {
-      const { providerId, email, firstName, lastName, accessToken, refreshToken } = req.user;
+      const {
+        providerId,
+        email,
+        firstName,
+        lastName,
+        accessToken,
+        refreshToken,
+      } = req.user;
       const user = await this.authService.validateOAuthUser(
         providerId,
         email,
@@ -189,7 +226,9 @@ export class AuthController {
       const token = authResponse.accessToken;
       return res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
     } catch {
-      return res.redirect(`${frontendUrl}/auth/error?message=Account+not+found.+Please+contact+HR.`);
+      return res.redirect(
+        `${frontendUrl}/auth/error?message=Account+not+found.+Please+contact+HR.`,
+      );
     }
   }
 

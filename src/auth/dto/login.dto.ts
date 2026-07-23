@@ -1,4 +1,11 @@
-import { IsEmail, IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
+import {
+  IsEmail,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MinLength,
+} from 'class-validator';
 
 export class LoginDto {
   @IsOptional()
@@ -46,6 +53,12 @@ export class ResetPasswordDto {
   @IsNotEmpty()
   @MinLength(8)
   newPassword: string;
+}
+
+export class HeartbeatDto {
+  @IsNotEmpty()
+  @IsUUID()
+  loginEventId: string;
 }
 
 export class OAuthCallbackDto {

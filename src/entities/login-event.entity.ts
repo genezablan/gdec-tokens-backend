@@ -32,4 +32,16 @@ export class LoginEvent {
   @CreateDateColumn()
   @Index()
   createdAt: Date;
+
+  /** Timestamp of the most recent heartbeat ping for this login session. */
+  @Column({ type: 'timestamptz', nullable: true })
+  lastHeartbeatAt: Date | null;
+
+  /**
+   * Accumulated session duration in seconds, built up from consecutive
+   * heartbeat pings. Stops accumulating once the gap between two heartbeats
+   * exceeds the idle threshold (see AuthService.heartbeat).
+   */
+  @Column({ type: 'int', default: 0 })
+  durationSeconds: number;
 }
