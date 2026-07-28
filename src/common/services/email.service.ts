@@ -309,6 +309,57 @@ export class EmailService {
   }
 
   /**
+   * [TO MANAGER / HR] Sent when an employee withdraws a request that had already
+   * been reviewed, so the approvers who acted on it (or still have it queued)
+   * know it has left their queue. No tokens were deducted.
+   */
+  async sendRequestCancelledNotification(opts: {
+    approverEmail: string;
+    approverName: string;
+    employeeName: string;
+    optionName: string;
+    tokenCost: number;
+    wasManagerApproved: boolean;
+    /** First-level approver for this request type — 'coach' for coaching. */
+    approverRole: 'manager' | 'coach';
+  }): Promise<void> {
+    const {
+      approverEmail,
+      approverName,
+      employeeName,
+      optionName,
+      tokenCost,
+      wasManagerApproved,
+      approverRole,
+    } = opts;
+
+    const stage = wasManagerApproved
+      ? `after ${approverRole} approval, while it was awaiting HR review`
+      : 'while it was awaiting review';
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${approverName}</strong>,</p>
+      <p style="margin:0 0 20px;"><strong>${employeeName}</strong> has cancelled their Development Token request ${stage}. No action is needed from you — the request has been removed from your queue.</p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 24px;">
+        ${this.detailRow('Employee:', employeeName)}
+        ${this.detailRow('Development Option:', optionName)}
+        ${this.detailRow('Tokens Reserved:', `${tokenCost} token${tokenCost !== 1 ? 's' : ''}`)}
+      </table>
+
+      <p style="margin:0;color:${BRAND.textMuted};font-size:14px;">No tokens were deducted for this request.</p>
+      ${this.button('View Requests', `${this.frontendUrl}/approval`)}
+    `;
+
+    await this.sendEmail({
+      to: approverEmail,
+      subject: `Token Request Cancelled — ${employeeName}`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${approverName},\n\n${employeeName} has cancelled their Development Token request ${stage}. No action is needed from you.\n\nEmployee: ${employeeName}\nDevelopment Option: ${optionName}\nTokens Reserved: ${tokenCost}\n\nNo tokens were deducted for this request.\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /**
    * [TO EMPLOYEE] Sent after HR gives final approval.
    */
   async sendApprovalNotification(opts: {

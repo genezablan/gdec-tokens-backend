@@ -537,24 +537,115 @@ export class TokenRequestsService {
 
   // ─── Cancel ───────────────────────────────────────────────────────────────────
 
+  /**
+   * PATCH /token-requests/:id/cancel
+   * Employee withdraws their own request. Allowed while the request is still
+   * `pending` and also once it is `manager_approved` — up to that point no
+   * tokens have been deducted, so cancelling is a pure state change.
+   *
+   * A `manager_approved` request is already in someone's queue, so the approvers
+   * are notified *before* the status flips: the manager who approved it, and
+   * every active HR approver who would otherwise be reviewing it. A `pending`
+   * request has only reached the manager, so only the manager is told.
+   *
+   * Once the request is fully `approved` the tokens are gone and cancelling
+   * would need a refund path — still blocked here.
+   */
   async cancel(requestId: string, employeeId: string): Promise<TokenRequest> {
     const request = await this.findRequest(requestId);
 
     if (request.employeeId !== employeeId) {
       throw new ForbiddenException('You can only cancel your own requests');
     }
-    if (request.status !== RequestStatus.PENDING) {
+
+    const cancellableStatuses = [
+      RequestStatus.PENDING,
+      RequestStatus.MANAGER_APPROVED,
+    ];
+    if (!cancellableStatuses.includes(request.status)) {
       throw new BadRequestException(
-        `Only pending requests can be cancelled (current: ${request.status})`,
+        `Only pending or manager-approved requests can be cancelled (current: ${request.status})`,
       );
     }
+
+    const wasManagerApproved =
+      request.status === RequestStatus.MANAGER_APPROVED;
+
+    // ── Notify the approvers first, before the request leaves their queue ──
+    await this.notifyApproversOfCancellation(request, wasManagerApproved);
 
     request.status = RequestStatus.CANCELLED;
     request.cancelledAt = new Date();
     await this.requestRepo.save(request);
-    this.logger.log(`Request ${requestId} cancelled by employee ${employeeId}`);
+    this.logger.log(
+      `Request ${requestId} cancelled by employee ${employeeId} (was: ${wasManagerApproved ? 'manager_approved' : 'pending'})`,
+    );
 
     return this.findRequest(requestId);
+  }
+
+  /**
+   * Tells the manager — and, once HR has it queued, every active HR approver —
+   * that an employee withdrew a request they were reviewing.
+   * Best-effort: a failed email or notification never blocks the cancellation.
+   */
+  private async notifyApproversOfCancellation(
+    request: TokenRequest,
+    wasManagerApproved: boolean,
+  ): Promise<void> {
+    const employeeName = `${request.employee.firstName} ${request.employee.lastName}`;
+    const optionName = request.developmentOption?.name ?? request.type;
+    const optionLabel = optionName.replace(/_/g, ' ');
+    // Coaching requests are first-level approved by the coach, not the manager.
+    const approverRole =
+      request.type === DevelopmentOptionType.COACHING ? 'coach' : 'manager';
+
+    const recipients: User[] = [];
+
+    // findRequest() eager-loads the manager relation.
+    if (request.manager) recipients.push(request.manager);
+
+    // Once manager-approved the request sits in HR's queue too, so HR needs to
+    // know it's gone.
+    if (wasManagerApproved) {
+      const hrUsers = await this.userRepo
+        .createQueryBuilder('user')
+        .where(':role = ANY(user.roles)', { role: UserRole.HR_APPROVER })
+        .andWhere('user.isActive = true')
+        .getMany();
+      recipients.push(...hrUsers);
+    }
+
+    // The manager may also hold the HR role — don't notify them twice.
+    const unique = new Map(recipients.map((r) => [r.id, r]));
+
+    for (const recipient of unique.values()) {
+      try {
+        await this.emailService.sendRequestCancelledNotification({
+          approverEmail: recipient.email,
+          approverName: `${recipient.firstName} ${recipient.lastName}`,
+          employeeName,
+          optionName,
+          tokenCost: request.tokenCost,
+          wasManagerApproved,
+          approverRole,
+        });
+      } catch (err: unknown) {
+        this.logger.warn(
+          `Failed to send cancellation email to ${recipient.email}: ${(err as Error).message}`,
+        );
+      }
+
+      this.notificationsService
+        .create(recipient.id, {
+          title: 'Request Cancelled',
+          message: `${employeeName} cancelled their ${optionLabel} request${wasManagerApproved ? ` after ${approverRole} approval` : ''}. No action is needed.`,
+          type: NotificationType.WARNING,
+          requestId: request.id,
+          metadata: { deeplink: '/approval' },
+        })
+        .catch(() => {});
+    }
   }
   // ─── Resubmit ─────────────────────────────────────────────────────────────────────────
 
