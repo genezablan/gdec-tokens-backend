@@ -6,6 +6,10 @@ import { CoachingSession } from '../entities/coaching-session.entity';
 import { User } from '../entities/user.entity';
 import { LoginEvent } from '../entities/login-event.entity';
 import { AnalyticsService } from './analytics.service';
+import { ExecutiveAnalyticsService } from './executive-analytics.service';
+import { DepartmentAnalyticsService } from './department-analytics.service';
+import { ManagerAnalyticsService } from './manager-analytics.service';
+import { EmployeeAnalyticsService } from './employee-analytics.service';
 import { AnalyticsController } from './analytics.controller';
 
 @Module({
@@ -19,6 +23,12 @@ import { AnalyticsController } from './analytics.controller';
     ]),
   ],
   controllers: [AnalyticsController],
-  providers: [AnalyticsService],
+  providers: [
+    AnalyticsService,
+    ExecutiveAnalyticsService,
+    DepartmentAnalyticsService,
+    ManagerAnalyticsService,
+    EmployeeAnalyticsService,
+  ],
 })
 export class AnalyticsModule {}
