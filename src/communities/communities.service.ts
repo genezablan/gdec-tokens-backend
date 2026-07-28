@@ -1,6 +1,7 @@
 import {
   Injectable,
   ConflictException,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -99,11 +100,28 @@ export class CommunitiesService {
   // ─── Admin: create & manage ───────────────────────────────────────────────
 
   /**
-   * POST /communities — create a community (platform admin only; gated at the
-   * controller). The creator becomes a community admin member.
+   * POST /communities — create a community. The creator becomes a community
+   * admin member.
+   *
+   * Platform admins may create either privacy level and may claim a human slug
+   * id (`cnb-team`). Regular users may only create **private** communities, and
+   * always get a generated UUID id so the readable-slug namespace stays
+   * admin-owned.
    */
   async create(user: User, dto: CreateCommunityDto): Promise<ApiCommunity> {
-    const id = dto.id?.trim() || uuidv4();
+    const isPlatformAdmin = this.access.isPlatformAdmin(user);
+
+    if (!isPlatformAdmin && dto.privacy === CommunityPrivacy.PUBLIC) {
+      throw new ForbiddenException(
+        'Only platform admins can create public communities',
+      );
+    }
+
+    const privacy = isPlatformAdmin
+      ? (dto.privacy ?? CommunityPrivacy.PUBLIC)
+      : CommunityPrivacy.PRIVATE;
+
+    const id = (isPlatformAdmin && dto.id?.trim()) || uuidv4();
 
     if (await this.communityRepo.findOne({ where: { id } })) {
       throw new ConflictException(`Community '${id}' already exists`);
@@ -113,12 +131,14 @@ export class CommunitiesService {
       this.communityRepo.create({
         id,
         name: dto.name.trim(),
-        slug: dto.slug?.trim() || dto.id?.trim() || null,
+        slug: isPlatformAdmin
+          ? dto.slug?.trim() || dto.id?.trim() || null
+          : null,
         description: dto.description ?? null,
         about: dto.about ?? null,
         avatarUrl: dto.avatarUrl ?? null,
         coverUrl: dto.coverUrl ?? null,
-        privacy: dto.privacy ?? CommunityPrivacy.PUBLIC,
+        privacy,
         topics: dto.topics ?? [],
       }),
     );
@@ -158,7 +178,19 @@ export class CommunitiesService {
     if (dto.about !== undefined) community.about = dto.about;
     if (dto.avatarUrl !== undefined) community.avatarUrl = dto.avatarUrl;
     if (dto.coverUrl !== undefined) community.coverUrl = dto.coverUrl;
-    if (dto.privacy !== undefined) community.privacy = dto.privacy;
+    if (dto.privacy !== undefined) {
+      // Mirrors create(): opening a community to the whole company is a
+      // platform-admin decision, so a community admin can't do it here.
+      if (
+        dto.privacy === CommunityPrivacy.PUBLIC &&
+        !this.access.isPlatformAdmin(user)
+      ) {
+        throw new ForbiddenException(
+          'Only platform admins can make a community public',
+        );
+      }
+      community.privacy = dto.privacy;
+    }
     if (dto.topics !== undefined) community.topics = dto.topics;
 
     await this.communityRepo.save(community);

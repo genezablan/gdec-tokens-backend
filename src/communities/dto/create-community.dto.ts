@@ -15,13 +15,16 @@ import { CommunityPrivacy } from '../../common/enums';
 import { ResourceInputDto } from './community-resource.dto';
 
 /**
- * POST /communities — create a community (platform admin only).
+ * POST /communities — create a community.
+ * Any authenticated user may create a private community; `privacy: public`,
+ * `id` and `slug` are platform-admin-only and rejected/ignored otherwise.
  * docs/community.md §14 (community creation/management).
  */
 export class CreateCommunityDto {
   /**
    * Optional human slug to use as the id (e.g. `cnb-team`). If omitted a UUID
    * is generated. Lowercase letters, numbers and hyphens only.
+   * Platform admins only — ignored for regular users.
    */
   @IsOptional()
   @IsString()
@@ -36,6 +39,7 @@ export class CreateCommunityDto {
   @MaxLength(150)
   name: string;
 
+  /** Platform admins only — ignored for regular users. */
   @IsOptional()
   @IsString()
   @MaxLength(100)

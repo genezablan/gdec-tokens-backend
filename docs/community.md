@@ -613,7 +613,12 @@ Other limits: title ≤ 200 (question ≤ 150); poll option label ≤ 80; commen
 - **Edit / delete** of posts and comments — not in the current UI; add endpoints (`PATCH`/`DELETE /community/:id`) when needed.
 - **Moderation / reporting** — flagging posts/comments; ties into the existing Message Approval workflow?
 - **Notifications** — confirm which events create notification entries (mentions, comments, reactions, join approvals) and whether they fan out over the existing SSE stream.
-- **Community creation/management** — who can create communities, edit cover/about/resources, promote admins? (No UI yet — likely admin-only `POST /communities`.)
+- **Community creation/management** — settled for creation: **any authenticated user** can
+  `POST /communities` to create a **private** community and becomes its community admin.
+  `privacy: public` is platform-admin-only, as is claiming a human-slug `id`/`slug` (regular
+  users always get a generated UUID id). The same rule guards `PATCH /communities/:id` so a
+  community admin can't flip their own private space to public. Still open: who may edit
+  cover/about/resources and promote admins beyond the existing community-admin check.
 - **GIFs** — stored as `image` attachments today (via Giphy URLs). Decide whether to proxy/store them or keep hot-linking.
 - **Enum ownership** — adopt `GET /community/meta` so badges/reactions/topics aren't duplicated client- and server-side.
 

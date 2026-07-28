@@ -17,10 +17,8 @@ import { CreateCommunityDto } from './dto/create-community.dto';
 import { UpdateCommunityDto } from './dto/update-community.dto';
 import { ReplaceResourcesDto } from './dto/community-resource.dto';
 import { UpdateMemberRoleDto } from './dto/update-member-role.dto';
-import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from '../entities/user.entity';
-import { UserRole } from '../common/enums';
 
 @Controller('communities')
 export class CommunitiesController {
@@ -36,9 +34,12 @@ export class CommunitiesController {
     return this.communitiesService.list(user, filter, q);
   }
 
-  /** POST /communities — create a community (platform admin only). */
+  /**
+   * POST /communities — create a community.
+   * Any authenticated user may create a *private* community; only platform
+   * admins may create public ones. Enforced in the service.
+   */
   @Post()
-  @Roles(UserRole.ADMIN)
   create(@CurrentUser() user: User, @Body() dto: CreateCommunityDto) {
     return this.communitiesService.create(user, dto);
   }
