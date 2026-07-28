@@ -15,6 +15,9 @@ import { NotificationsService } from './notifications.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from '../entities/user.entity';
 
+/** Well under the common 60s proxy/load-balancer idle timeout. */
+const SSE_HEARTBEAT_MS = 25_000;
+
 @Controller('notifications')
 export class NotificationsController {
   constructor(private readonly notificationsService: NotificationsService) {}
@@ -49,7 +52,18 @@ export class NotificationsController {
       next: (event) => res.write(`data: ${JSON.stringify(event.data)}\n\n`),
     });
 
-    req.on('close', () => subscription.unsubscribe());
+    // A stream with nothing to say writes zero bytes, and idle timeouts (proxies,
+    // load balancers, NAT) then reap it silently. This comment frame keeps the
+    // connection provably alive; clients ignore it.
+    const heartbeat = setInterval(
+      () => res.write(': ping\n\n'),
+      SSE_HEARTBEAT_MS,
+    );
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      subscription.unsubscribe();
+    });
   }
 
   /**
