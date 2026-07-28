@@ -6,7 +6,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Not, QueryFailedError, Repository } from 'typeorm';
+import { Between, In, Not, QueryFailedError, Repository } from 'typeorm';
 import { CoachingSession } from '../entities/coaching-session.entity';
 import { CoachAvailability } from '../entities/coach-availability.entity';
 import { TokenRequest } from '../entities/token-request.entity';
@@ -25,6 +25,13 @@ import { CalendarService } from '../calendar/calendar.service';
 
 const SESSIONS_PER_CYCLE = 3;
 const DEFAULT_SESSION_MINUTES = 60;
+
+/** Statuses that no longer hold their time slot (safe to book over). */
+const RELEASED_STATUSES = [
+  CoachingSessionStatus.CANCELLED,
+  CoachingSessionStatus.DECLINED,
+  CoachingSessionStatus.NO_SHOW,
+];
 
 @Injectable()
 export class CoachingSessionsService {
@@ -59,19 +66,13 @@ export class CoachingSessionsService {
     if (!(await this.calendarService.isConnected(coach.id))) return;
 
     // Determine end time from the booked slot, else default duration.
-    let end = new Date(
-      session.scheduledAt.getTime() + DEFAULT_SESSION_MINUTES * 60_000,
-    );
+    let slot: CoachAvailability | null = null;
     if (session.availabilityId) {
-      const slot = await this.availabilityRepo.findOne({
+      slot = await this.availabilityRepo.findOne({
         where: { id: session.availabilityId },
       });
-      if (slot?.endTime && slot?.availableDate) {
-        const slotEnd = new Date(`${slot.availableDate}T${slot.endTime}`);
-        if (!Number.isNaN(slotEnd.getTime()) && slotEnd > session.scheduledAt)
-          end = slotEnd;
-      }
     }
+    const end = this.sessionEndOf(session.scheduledAt, slot);
 
     const withWho = employee ? ` with ${employee.fullName}` : '';
     const subject = `Coaching Session ${session.sessionNumber}${withWho}`;
@@ -89,6 +90,9 @@ export class CoachingSessionsService {
       session.teamsJoinUrl = joinUrl;
       session.calendarSyncStatus = 'synced';
       await this.sessionRepo.save(session);
+      // Teams meeting still provisioning on Graph's side — pick the join URL
+      // up in the background so it lands before anyone opens the session view.
+      if (!joinUrl) this.scheduleJoinUrlBackfill(session.id, coach.id, eventId);
     } catch (err) {
       session.calendarSyncStatus = 'failed';
       await this.sessionRepo.save(session);
@@ -96,6 +100,37 @@ export class CoachingSessionsService {
         `Failed to sync session ${session.id} to calendar: ${(err as Error).message}`,
       );
     }
+  }
+
+  /**
+   * Re-read the event after a delay to attach a join URL that wasn't ready at
+   * creation time. Fire-and-forget: a miss just leaves teamsJoinUrl null.
+   */
+  private scheduleJoinUrlBackfill(
+    sessionId: string,
+    coachId: string,
+    eventId: string,
+  ): void {
+    setTimeout(() => {
+      void (async () => {
+        try {
+          const joinUrl = await this.calendarService.fetchEventJoinUrl(
+            coachId,
+            eventId,
+          );
+          if (joinUrl) {
+            await this.sessionRepo.update(
+              { id: sessionId },
+              { teamsJoinUrl: joinUrl },
+            );
+          }
+        } catch (err) {
+          this.logger.warn(
+            `Join URL backfill failed for session ${sessionId}: ${(err as Error).message}`,
+          );
+        }
+      })();
+    }, 10_000);
   }
 
   /** Remove a session's calendar event if one was created. Best-effort. */
@@ -154,6 +189,51 @@ export class CoachingSessionsService {
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+  /** Session end = booked slot's end when known, else start + default duration. */
+  private sessionEndOf(
+    scheduledAt: Date,
+    slot: CoachAvailability | null | undefined,
+  ): Date {
+    if (slot?.endTime && slot?.availableDate) {
+      const end = new Date(`${slot.availableDate}T${slot.endTime}`);
+      if (!Number.isNaN(end.getTime()) && end > scheduledAt) return end;
+    }
+    return new Date(scheduledAt.getTime() + DEFAULT_SESSION_MINUTES * 60_000);
+  }
+
+  /**
+   * Find a session for the given coach or employee whose time range overlaps
+   * [startAt, endAt). Sessions store only a start timestamp, so candidates are
+   * pre-filtered to a day-wide window and each end is derived from its slot.
+   */
+  private async findOverlappingSession(
+    scope: { coachId: string } | { employeeId: string },
+    startAt: Date,
+    endAt: Date,
+    opts: {
+      excludeStatuses: CoachingSessionStatus[];
+      excludeSessionId?: string;
+    },
+  ): Promise<CoachingSession | null> {
+    const windowStart = new Date(startAt.getTime() - 24 * 60 * 60_000);
+    const candidates = await this.sessionRepo.find({
+      where: {
+        ...scope,
+        status: Not(In(opts.excludeStatuses)),
+        scheduledAt: Between(windowStart, endAt),
+      },
+      relations: ['availability'],
+    });
+    return (
+      candidates.find(
+        (s) =>
+          s.id !== opts.excludeSessionId &&
+          s.scheduledAt < endAt && // Between is end-inclusive
+          this.sessionEndOf(s.scheduledAt, s.availability) > startAt,
+      ) ?? null
+    );
+  }
 
   private async getApprovedCoachingRequest(
     requestId: string,
@@ -307,13 +387,7 @@ export class CoachingSessionsService {
     const bookedCount = await this.sessionRepo.count({
       where: {
         tokenRequestId: requestId,
-        status: Not(
-          In([
-            CoachingSessionStatus.CANCELLED,
-            CoachingSessionStatus.DECLINED,
-            CoachingSessionStatus.NO_SHOW,
-          ]),
-        ),
+        status: Not(In(RELEASED_STATUSES)),
       },
     });
 
@@ -341,24 +415,6 @@ export class CoachingSessionsService {
         slot.endTime,
       );
     } else if (dto.availableDate && dto.startTime && dto.endTime) {
-      // Guard against double-booking the coach at this exact time.
-      const startAt = new Date(`${dto.availableDate}T${dto.startTime}`);
-      const clash = await this.sessionRepo.findOne({
-        where: {
-          coachId,
-          scheduledAt: startAt,
-          status: Not(
-            In([
-              CoachingSessionStatus.CANCELLED,
-              CoachingSessionStatus.DECLINED,
-              CoachingSessionStatus.NO_SHOW,
-            ]),
-          ),
-        },
-      });
-      if (clash) {
-        throw new BadRequestException('This time slot is no longer available');
-      }
       // Re-check Outlook live — the slot list the employee picked from may be
       // stale (fetched before the coach's calendar changed).
       await this.assertNoOutlookConflict(
@@ -367,16 +423,16 @@ export class CoachingSessionsService {
         dto.startTime,
         dto.endTime,
       );
-      slot = await this.availabilityRepo.save(
-        this.availabilityRepo.create({
-          coachId,
-          availableDate: dto.availableDate,
-          startTime: dto.startTime,
-          endTime: dto.endTime,
-          isBooked: false,
-          isActive: true,
-        }),
-      );
+      // Not saved yet — inserted below only once every conflict check has
+      // passed, so a rejected booking leaves no orphan slot row.
+      slot = this.availabilityRepo.create({
+        coachId,
+        availableDate: dto.availableDate,
+        startTime: dto.startTime,
+        endTime: dto.endTime,
+        isBooked: false,
+        isActive: true,
+      });
     } else {
       throw new BadRequestException(
         'Provide an availabilityId or a time slot (availableDate, startTime, endTime)',
@@ -398,6 +454,34 @@ export class CoachingSessionsService {
     const scheduledAt = new Date(`${slot.availableDate}T${slot.startTime}`);
     if (scheduledAt < new Date()) {
       throw new BadRequestException('Cannot book a slot in the past');
+    }
+
+    // Conflict detection: interval overlap (not exact-time equality — session
+    // durations vary per coach), for the coach and the employee alike. An
+    // employee holding cycles with two different coaches must not be able to
+    // book both at the same time.
+    const sessionEnd = this.sessionEndOf(scheduledAt, slot);
+    const coachClash = await this.findOverlappingSession(
+      { coachId },
+      scheduledAt,
+      sessionEnd,
+      { excludeStatuses: RELEASED_STATUSES },
+    );
+    if (coachClash) {
+      throw new BadRequestException('This time slot is no longer available');
+    }
+    const employeeClash = await this.findOverlappingSession(
+      { employeeId: request.employeeId },
+      scheduledAt,
+      sessionEnd,
+      { excludeStatuses: RELEASED_STATUSES },
+    );
+    if (employeeClash) {
+      throw new BadRequestException(
+        callerId === request.employeeId
+          ? 'You already have a coaching session that overlaps this time. Please choose another slot.'
+          : 'The employee already has a coaching session that overlaps this time. Please choose another slot.',
+      );
     }
 
     // Mark slot as booked
@@ -469,6 +553,7 @@ export class CoachingSessionsService {
   ): Promise<CoachingSession> {
     const session = await this.sessionRepo.findOne({
       where: { id: sessionId, tokenRequestId: requestId },
+      relations: ['availability'],
     });
     if (!session) throw new NotFoundException('Session not found');
     if (session.coachId !== coachId) {
@@ -479,6 +564,40 @@ export class CoachingSessionsService {
     if (session.status !== CoachingSessionStatus.PENDING_COACH_APPROVAL) {
       throw new BadRequestException(
         `Session is not pending approval — current status: ${session.status}`,
+      );
+    }
+
+    // Backstop: overlapping bookings can coexist while pending (or predate
+    // conflict detection), so re-check against sessions that hold their time
+    // before locking this one in. Pending requests don't block each other
+    // here — otherwise two overlapping pendings could never both resolve.
+    const sessionEnd = this.sessionEndOf(
+      session.scheduledAt,
+      session.availability,
+    );
+    const confirmBlockers = {
+      excludeStatuses: [
+        ...RELEASED_STATUSES,
+        CoachingSessionStatus.PENDING_COACH_APPROVAL,
+      ],
+      excludeSessionId: session.id,
+    };
+    const clash =
+      (await this.findOverlappingSession(
+        { coachId: session.coachId },
+        session.scheduledAt,
+        sessionEnd,
+        confirmBlockers,
+      )) ??
+      (await this.findOverlappingSession(
+        { employeeId: session.employeeId },
+        session.scheduledAt,
+        sessionEnd,
+        confirmBlockers,
+      ));
+    if (clash) {
+      throw new BadRequestException(
+        'This session overlaps another scheduled session. Please decline it so a different time can be booked.',
       );
     }
 

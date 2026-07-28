@@ -352,10 +352,28 @@ export class CalendarService {
       payload,
     );
     if (!created) throw new Error('Graph returned no event');
-    return {
-      eventId: created.id,
-      joinUrl: created.onlineMeeting?.joinUrl ?? null,
-    };
+    // Graph provisions the Teams meeting asynchronously, so the create
+    // response often omits onlineMeeting — a second read usually has it.
+    let joinUrl = created.onlineMeeting?.joinUrl ?? null;
+    if (!joinUrl) {
+      joinUrl = await this.fetchEventJoinUrl(coachId, created.id).catch(
+        () => null,
+      );
+    }
+    return { eventId: created.id, joinUrl };
+  }
+
+  /** Read an event's Teams join URL, if the meeting has been provisioned yet. */
+  async fetchEventJoinUrl(
+    coachId: string,
+    eventId: string,
+  ): Promise<string | null> {
+    const accessToken = await this.getValidAccessToken(coachId);
+    const ev = await this.graphGet<{ onlineMeeting?: { joinUrl?: string } }>(
+      `/me/events/${eventId}?$select=onlineMeeting`,
+      accessToken,
+    );
+    return ev.onlineMeeting?.joinUrl ?? null;
   }
 
   /** Cancel/delete a previously created calendar event (sends cancellation to attendees). */
