@@ -17,6 +17,16 @@ import { Public } from '../auth/decorators/public.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../common/enums';
 
+/**
+ * Parses the optional `fileSize` query param (bytes). Returns undefined when
+ * absent or unparseable so the service falls back to skipping the size check.
+ */
+const parseFileSize = (raw?: string): number | undefined => {
+  if (raw === undefined || raw === '') return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+};
+
 @Controller('tutorials')
 export class TutorialsController {
   constructor(private readonly tutorialsService: TutorialsService) {}
@@ -77,8 +87,9 @@ export class TutorialsController {
   }
 
   /**
-   * GET /api/tutorials/:id/video/presigned-upload?fileName=&contentType=
+   * GET /api/tutorials/:id/video/presigned-upload?fileName=&contentType=&fileSize=
    * Admin only: get a pre-signed S3 PUT URL so the browser can upload the video directly.
+   * `fileSize` (bytes) is optional; when sent it is checked against the 1 GB limit.
    */
   @Get(':id/video/presigned-upload')
   @Roles(UserRole.ADMIN)
@@ -86,6 +97,7 @@ export class TutorialsController {
     @Param('id', ParseUUIDPipe) id: string,
     @Query('fileName') fileName: string,
     @Query('contentType') contentType: string,
+    @Query('fileSize') fileSize?: string,
   ) {
     if (!fileName || !contentType) {
       throw new BadRequestException(
@@ -97,6 +109,7 @@ export class TutorialsController {
       'video',
       fileName,
       contentType,
+      parseFileSize(fileSize),
     );
   }
 
@@ -115,8 +128,9 @@ export class TutorialsController {
   }
 
   /**
-   * GET /api/tutorials/:id/thumbnail/presigned-upload?fileName=&contentType=
+   * GET /api/tutorials/:id/thumbnail/presigned-upload?fileName=&contentType=&fileSize=
    * Admin only: get a pre-signed S3 PUT URL so the browser can upload the thumbnail directly.
+   * `fileSize` (bytes) is optional; when sent it is checked against the 5 MB limit.
    */
   @Get(':id/thumbnail/presigned-upload')
   @Roles(UserRole.ADMIN)
@@ -124,6 +138,7 @@ export class TutorialsController {
     @Param('id', ParseUUIDPipe) id: string,
     @Query('fileName') fileName: string,
     @Query('contentType') contentType: string,
+    @Query('fileSize') fileSize?: string,
   ) {
     if (!fileName || !contentType) {
       throw new BadRequestException(
@@ -135,6 +150,7 @@ export class TutorialsController {
       'thumbnail',
       fileName,
       contentType,
+      parseFileSize(fileSize),
     );
   }
 

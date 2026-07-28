@@ -20,6 +20,24 @@ const PRESIGNED_URL_TTL_SECONDS = 7200;
 const VIDEO_MIME_TYPES = ['video/mp4', 'video/webm', 'video/quicktime'];
 const IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
+/** Largest tutorial video we accept (1 GB). Keep in sync with the frontend. */
+export const MAX_VIDEO_UPLOAD_BYTES = 1024 * 1024 * 1024;
+/** Largest tutorial thumbnail we accept (5 MB). */
+export const MAX_THUMBNAIL_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+/**
+ * How long an upload's pre-signed PUT URL stays valid. The signature has to
+ * outlive the whole transfer, so videos get an hour — enough for 1 GB on a
+ * ~2.5 Mbps uplink. Thumbnails are small, so 5 minutes is plenty.
+ */
+const UPLOAD_URL_TTL_SECONDS = { video: 3600, thumbnail: 300 } as const;
+
+/** "1 GB" / "5 MB" — for size-limit error messages. */
+const formatBytes = (bytes: number): string =>
+  bytes >= 1024 * 1024 * 1024
+    ? `${bytes / 1024 / 1024 / 1024} GB`
+    : `${bytes / 1024 / 1024} MB`;
+
 export interface TutorialResponse {
   id: string;
   title: string;
@@ -147,6 +165,7 @@ export class TutorialsService implements OnApplicationBootstrap {
     assetType: 'video' | 'thumbnail',
     fileName: string,
     contentType: string,
+    fileSize?: number,
   ): Promise<{ uploadUrl: string; fileUrl: string; key: string }> {
     await this.getEntity(id);
 
@@ -157,11 +176,25 @@ export class TutorialsService implements OnApplicationBootstrap {
       );
     }
 
+    // fileSize is the size the client declares. Optional for backwards
+    // compatibility, but when sent it lets us reject an oversized upload before
+    // handing out a signature rather than after the bytes are already in S3.
+    const maxBytes =
+      assetType === 'video'
+        ? MAX_VIDEO_UPLOAD_BYTES
+        : MAX_THUMBNAIL_UPLOAD_BYTES;
+    if (fileSize !== undefined && fileSize > maxBytes) {
+      throw new BadRequestException(
+        `${assetType === 'video' ? 'Video' : 'Thumbnail'} exceeds the ${formatBytes(maxBytes)} limit.`,
+      );
+    }
+
     return this.s3Service.generateTutorialAssetPresignedUploadUrl(
       id,
       assetType,
       fileName,
       contentType,
+      UPLOAD_URL_TTL_SECONDS[assetType],
     );
   }
 

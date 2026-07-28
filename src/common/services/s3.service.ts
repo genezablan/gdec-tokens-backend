@@ -281,13 +281,16 @@ export class S3Service {
   /**
    * Generates a pre-signed PUT URL for uploading a tutorial asset directly from the browser.
    * Key pattern: tutorials/<tutorialId>/<assetType>/<uuid>/<filename>  (assetType = video | thumbnail)
-   * Expires in 5 minutes.
+   *
+   * `expiresInSeconds` must cover the whole upload — the signature dies mid-transfer
+   * otherwise. Videos are allowed up to 1 GB, so callers pass a long TTL for them.
    */
   async generateTutorialAssetPresignedUploadUrl(
     tutorialId: string,
     assetType: 'video' | 'thumbnail',
     filename: string,
     contentType: string,
+    expiresInSeconds = 300,
   ): Promise<{ uploadUrl: string; fileUrl: string; key: string }> {
     const key = `tutorials/${tutorialId}/${assetType}/${uuidv4()}/${filename}`;
     const region = this.configService.get<string>('s3.region') || 'ap-southeast-1';
@@ -298,7 +301,9 @@ export class S3Service {
       ContentType: contentType,
     });
 
-    const uploadUrl = await getSignedUrl(this.s3Client, command, { expiresIn: 300 });
+    const uploadUrl = await getSignedUrl(this.s3Client, command, {
+      expiresIn: expiresInSeconds,
+    });
     const encodedKey = key.split('/').map(encodeURIComponent).join('/');
     const fileUrl = `https://${this.bucketName}.s3.${region}.amazonaws.com/${encodedKey}`;
 
