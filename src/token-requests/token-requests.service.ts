@@ -59,6 +59,22 @@ export class TokenRequestsService {
   }
 
   /**
+   * The Task Offloading form allows a project duration of 1–3 months.
+   * Enforce the upper bound here (the UI communicates the range); a shorter
+   * project is left to the approvers' judgment rather than hard-blocked.
+   */
+  private assertProjectDurationWithinLimit(
+    startDate: string,
+    endDate: string,
+  ): void {
+    const limit = new Date(startDate);
+    limit.setMonth(limit.getMonth() + 3);
+    if (new Date(endDate) > limit) {
+      throw new BadRequestException('Project duration cannot exceed 3 months.');
+    }
+  }
+
+  /**
    * Resolve the manager for an employee.
    * Uses immediateSupervisorId if that user has approver role,
    * otherwise falls back to any admin.
@@ -204,6 +220,10 @@ export class TokenRequestsService {
     dto: CreateTaskOffloadingRequestDto,
   ): Promise<TokenRequest> {
     this.assertValidDateRange(dto.formData.startDate, dto.formData.endDate);
+    this.assertProjectDurationWithinLimit(
+      dto.formData.startDate,
+      dto.formData.endDate,
+    );
 
     const { employee, option, year, balance, manager } = await this.prepareRequest(
       employeeId,
@@ -302,7 +322,12 @@ export class TokenRequestsService {
         coachId: dto.coachId,
         coachName: `${coach.firstName} ${coach.lastName}`,
         notes: dto.notes ?? null,
+        focusArea: dto.formData.focusArea,
+        developmentObjective: dto.formData.developmentObjective,
+        keyChallenges: dto.formData.keyChallenges ?? null,
+        expectedOutcomes: dto.formData.expectedOutcomes ?? null,
         preferredSchedule: dto.formData.preferredSchedule,
+        sameCoachAcknowledged: dto.formData.sameCoachAcknowledged,
       },
       attachmentUrl: dto.attachmentUrl,
     });
@@ -317,6 +342,13 @@ export class TokenRequestsService {
     dto: CreateLearningSubsidyRequestDto,
   ): Promise<TokenRequest> {
     this.assertValidDateRange(dto.formData.startDate, dto.formData.endDate);
+
+    // The form asks for the actual value: the request can't exceed the cost.
+    if (dto.subsidyAmount > dto.formData.totalCost) {
+      throw new BadRequestException(
+        `Subsidy amount ₱${dto.subsidyAmount.toLocaleString()} cannot exceed the total training cost of ₱${dto.formData.totalCost.toLocaleString()}`,
+      );
+    }
 
     const { employee, option, year, balance, manager } = await this.prepareRequest(
       employeeId,
@@ -357,6 +389,14 @@ export class TokenRequestsService {
         tokenCost,
         startDate: dto.formData.startDate,
         endDate: dto.formData.endDate,
+        modeOfTraining: dto.formData.modeOfTraining,
+        totalCost: dto.formData.totalCost,
+        learningDescription: dto.formData.learningDescription,
+        businessAlignment: dto.formData.businessAlignment,
+        applicationPlan: dto.formData.applicationPlan,
+        duringWorkHours: dto.formData.duringWorkHours,
+        onePerTeamAcknowledged: dto.formData.onePerTeamAcknowledged,
+        reimbursementType: dto.formData.reimbursementType,
       },
       attachmentUrl: dto.attachmentUrl,
     });
@@ -670,16 +710,42 @@ export class TokenRequestsService {
       );
     }
 
+    // Copy every defined DTO key from `keys` into `formData` — the resubmit
+    // merge is "only what was sent changes".
+    const mergeKeys = (
+      formData: Record<string, unknown>,
+      keys: (keyof ResubmitTokenRequestDto)[],
+    ) => {
+      for (const key of keys) {
+        if (dto[key] !== undefined) formData[key] = dto[key];
+      }
+    };
+
     // ── Merge updated fields into formData per type ──
     if (request.type === DevelopmentOptionType.TASK_OFFLOADING) {
       const formData = { ...(request.formData as Record<string, unknown>) };
-      if (dto.requestSubject !== undefined) formData.requestSubject = dto.requestSubject;
-      if (dto.startDate !== undefined) formData.startDate = dto.startDate;
-      if (dto.endDate !== undefined) formData.endDate = dto.endDate;
-      if (dto.reason !== undefined) formData.reason = dto.reason;
+      mergeKeys(formData, [
+        'projectTitle',
+        'requestSubject',
+        'startDate',
+        'endDate',
+        'reason',
+        'projectDescription',
+        'scopeOfWork',
+        'successMetrics',
+        'expectedDeliverables',
+        'businessAlignment',
+        'developmentGoals',
+        'taskToOffload',
+        'colleagueName',
+      ]);
 
       // Validate the effective range (merging any unchanged dates from the original).
       this.assertValidDateRange(
+        formData.startDate as string,
+        formData.endDate as string,
+      );
+      this.assertProjectDurationWithinLimit(
         formData.startDate as string,
         formData.endDate as string,
       );
@@ -700,7 +766,14 @@ export class TokenRequestsService {
         formData.coachId = coach.id;
         formData.coachName = `${coach.firstName} ${coach.lastName}`;
       }
-      if (dto.notes !== undefined) formData.notes = dto.notes;
+      mergeKeys(formData, [
+        'notes',
+        'focusArea',
+        'developmentObjective',
+        'keyChallenges',
+        'expectedOutcomes',
+        'preferredSchedule',
+      ]);
       if (dto.attachmentUrl) request.attachmentUrl = dto.attachmentUrl;
       request.formData = formData;
     } else if (request.type === DevelopmentOptionType.LEARNING_SUBSIDY) {
@@ -727,8 +800,39 @@ export class TokenRequestsService {
         formData.tokenCost = newTokenCost;
         request.tokenCost = newTokenCost;
       }
-      if (dto.courseName !== undefined) formData.courseName = dto.courseName;
-      if (dto.provider !== undefined) formData.provider = dto.provider;
+      mergeKeys(formData, [
+        'courseName',
+        'provider',
+        'startDate',
+        'endDate',
+        'modeOfTraining',
+        'totalCost',
+        'learningDescription',
+        'businessAlignment',
+        'applicationPlan',
+        'duringWorkHours',
+        'reimbursementType',
+      ]);
+
+      // Re-validate the effective date range and cost/amount relationship.
+      if (formData.startDate && formData.endDate) {
+        this.assertValidDateRange(
+          formData.startDate as string,
+          formData.endDate as string,
+        );
+      }
+      const effectiveAmount = formData.subsidyAmount as number | undefined;
+      const effectiveTotal = formData.totalCost as number | undefined;
+      if (
+        effectiveAmount != null &&
+        effectiveTotal != null &&
+        effectiveAmount > effectiveTotal
+      ) {
+        throw new BadRequestException(
+          `Subsidy amount ₱${effectiveAmount.toLocaleString()} cannot exceed the total training cost of ₱${effectiveTotal.toLocaleString()}`,
+        );
+      }
+
       if (dto.attachmentUrl) request.attachmentUrl = dto.attachmentUrl;
       request.formData = formData;
     }

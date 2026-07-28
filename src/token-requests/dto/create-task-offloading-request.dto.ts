@@ -2,19 +2,26 @@ import {
   IsDateString,
   IsNotEmpty,
   IsObject,
+  IsOptional,
   IsString,
   IsUUID,
+  MaxLength,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
+/**
+ * Mirrors the "Development Token Request Form – Task Offloading" document.
+ * The form is filled in-app; there is no document upload requirement.
+ */
 export class TaskOffloadingFormDataDto {
-  /** Short title for the request, e.g. "Task offloading request". */
+  /** Project title (OTJ / Special Project). */
   @IsString()
   @IsNotEmpty()
-  requestSubject!: string;
+  @MaxLength(200)
+  projectTitle!: string;
 
-  /** Offloading start date (ISO `YYYY-MM-DD`). */
+  /** Offloading start date (ISO `YYYY-MM-DD`). Duration must be 1–3 months. */
   @IsDateString()
   startDate!: string;
 
@@ -22,10 +29,49 @@ export class TaskOffloadingFormDataDto {
   @IsDateString()
   endDate!: string;
 
-  /** Why the offloading is needed. */
+  /** What the project is about. */
   @IsString()
   @IsNotEmpty()
-  reason!: string;
+  projectDescription!: string;
+
+  /** Scope of work. */
+  @IsString()
+  @IsNotEmpty()
+  scopeOfWork!: string;
+
+  /** Success metrics / KPIs (optional on the form). */
+  @IsOptional()
+  @IsString()
+  successMetrics?: string;
+
+  /** Expected deliverables. */
+  @IsString()
+  @IsNotEmpty()
+  expectedDeliverables!: string;
+
+  /** How the project aligns with Department or GDEC priorities. */
+  @IsString()
+  @IsNotEmpty()
+  businessAlignment!: string;
+
+  /**
+   * How the project supports the employee's development goals.
+   * Optional on the form, but flagged as highly recommended.
+   */
+  @IsOptional()
+  @IsString()
+  developmentGoals?: string;
+
+  /** Which task will be offloaded. */
+  @IsString()
+  @IsNotEmpty()
+  taskToOffload!: string;
+
+  /** Name of the colleague taking over the task (optional). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  colleagueName?: string;
 }
 
 export class CreateTaskOffloadingRequestDto {
@@ -33,10 +79,10 @@ export class CreateTaskOffloadingRequestDto {
   @IsUUID()
   developmentOptionId!: string;
 
-  /** S3 URL of the completed Task Offloading form, uploaded before submission. */
-  @IsNotEmpty()
+  /** Optional S3 URL of a supporting document uploaded before submission. */
+  @IsOptional()
   @IsString()
-  attachmentUrl!: string;
+  attachmentUrl?: string;
 
   /** Form fields captured in the request modal; persisted as the request's formData. */
   @IsObject()
