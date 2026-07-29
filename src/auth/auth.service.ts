@@ -23,6 +23,8 @@ import {
 import { AuthResponse, JwtPayload } from './interfaces/jwt-payload.interface';
 import { EmailService } from '../common/services/email.service';
 import { S3Service } from '../common/services/s3.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../entities/notification.entity';
 
 /** A gap between heartbeats larger than this is treated as idle/away, not active usage. */
 const HEARTBEAT_IDLE_THRESHOLD_SECONDS = 5 * 60;
@@ -38,6 +40,7 @@ export class AuthService {
     private configService: ConfigService,
     private emailService: EmailService,
     private s3Service: S3Service,
+    private notificationsService: NotificationsService,
   ) {}
 
   async validateUser(
@@ -400,20 +403,35 @@ export class AuthService {
       })
       .catch(() => {});
 
-    const hrUsers = await this.userRepository
-      .createQueryBuilder('hr')
-      .where(':role = ANY(hr.roles)', { role: UserRole.HR_APPROVER })
-      .andWhere('hr.isActive = true')
+    // Everyone who can act on the approval queue: HR approvers and admins
+    // (the /hr/registrations page is gated to exactly these roles). Roles can
+    // overlap on one person — the query returns each user once.
+    const reviewers = await this.userRepository
+      .createQueryBuilder('reviewer')
+      .where('(:hrRole = ANY(reviewer.roles) OR :adminRole = ANY(reviewer.roles))', {
+        hrRole: UserRole.HR_APPROVER,
+        adminRole: UserRole.ADMIN,
+      })
+      .andWhere('reviewer.isActive = true')
       .getMany();
 
-    for (const hrUser of hrUsers) {
+    for (const reviewer of reviewers) {
       this.emailService
         .sendNewRegistrationNotification({
-          hrEmail: hrUser.email,
-          hrName: hrUser.fullName,
+          hrEmail: reviewer.email,
+          hrName: reviewer.fullName,
           applicantName: user.fullName,
           applicantEmail: user.email,
           department: user.department,
+        })
+        .catch(() => {});
+
+      this.notificationsService
+        .create(reviewer.id, {
+          title: 'New Registration Pending Approval',
+          message: `${user.fullName}${user.department ? ` (${user.department})` : ''} registered and is awaiting account approval.`,
+          type: NotificationType.INFO,
+          metadata: { deeplink: '/hr/registrations' },
         })
         .catch(() => {});
     }
@@ -436,7 +454,9 @@ export class AuthService {
 
     const rawToken = crypto.randomBytes(32).toString('hex');
     const hashedToken = await bcrypt.hash(rawToken, 10);
-    const expiry = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+    // 30 minutes — keep in sync with the ForgotPassword page copy and the
+    // expiryMinutes passed to the reset email below.
+    const expiry = new Date(Date.now() + 30 * 60 * 1000);
 
     user.passwordResetToken = hashedToken;
     user.passwordResetExpiry = expiry;
@@ -451,7 +471,7 @@ export class AuthService {
         email: user.email,
         name: `${user.firstName} ${user.lastName}`,
         resetLink,
-        expiryMinutes: 5,
+        expiryMinutes: 30,
       });
     } catch {
       // Don't expose email errors to caller
