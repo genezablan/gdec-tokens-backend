@@ -22,6 +22,13 @@ export interface SendEmailResponse {
 /** Use-it-or-lose-it reminder tiers, in calendar order. */
 export type TokenReminderCheckpoint = 'Q1' | 'Q2' | 'Q3' | 'OCT' | 'NOV' | 'FINAL';
 
+/**
+ * Approval SLA policy (calendar days per approval stage). Referenced by the
+ * reminder email copy and the ApprovalSlaService cron.
+ */
+export const APPROVAL_SLA_DAYS = 3;
+export const APPROVAL_ESCALATION_DAYS = 6;
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const BRAND = {
@@ -305,6 +312,51 @@ export class EmailService {
       subject: `Action Required: Token Request Pending Final Review — ${employeeName}`,
       htmlBody: this.buildTemplate(content),
       textBody: `Hi ${hrName},\n\n${employeeName}'s Development Token request has been approved by their ${firstApproverRole} (${firstApproverName}) and needs your final review.\n\nEmployee: ${employeeName}\nDevelopment Option: ${optionName}\nTokens to Deduct: ${tokenCost}\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /**
+   * [TO APPROVER or ESCALATION CONTACT] A request has sat in someone's queue
+   * past the approval SLA. `escalation` switches the wording from "your queue"
+   * to "an overdue request you should chase".
+   */
+  async sendApprovalSlaReminderEmail(opts: {
+    recipientEmail: string;
+    recipientName: string;
+    employeeName: string;
+    optionName: string;
+    stage: 'Manager' | 'Coach' | 'HR';
+    daysPending: number;
+    escalation: boolean;
+  }): Promise<void> {
+    const { recipientEmail, recipientName, employeeName, optionName, stage, daysPending, escalation } = opts;
+
+    const intro = escalation
+      ? `A Development Token request from <strong>${employeeName}</strong> has been waiting for <strong>${stage}</strong> approval for <strong>${daysPending} days</strong> — past the escalation threshold. Please follow up with the approver or action it directly.`
+      : `A Development Token request from <strong>${employeeName}</strong> has been waiting in your queue for <strong>${daysPending} days</strong>, which is past the ${APPROVAL_SLA_DAYS}-day approval SLA.`;
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${recipientName}</strong>,</p>
+      <p style="margin:0 0 20px;">${intro}</p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 24px;">
+        ${this.detailRow('Employee:', employeeName)}
+        ${this.detailRow('Development Option:', optionName)}
+        ${this.detailRow('Approval Stage:', stage)}
+        ${this.detailRow('Days Waiting:', `${daysPending}`)}
+      </table>
+
+      <p style="margin:0;color:${BRAND.textMuted};font-size:14px;">Employees can't plan their development while a request is undecided — a quick approve or reject keeps the program moving.</p>
+      ${this.button('Review Request', `${this.frontendUrl}/approval`)}
+    `;
+
+    await this.sendEmail({
+      to: recipientEmail,
+      subject: escalation
+        ? `Escalation: Token Request Overdue ${daysPending} Days — ${employeeName}`
+        : `Reminder: Token Request Awaiting Your Review — ${employeeName}`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${recipientName},\n\n${employeeName}'s Development Token request (${optionName}) has been waiting ${daysPending} days at the ${stage} approval stage.\n\nPlease log in to review it.\n\nBest regards,\nGreat Deals Academy`,
     });
   }
 

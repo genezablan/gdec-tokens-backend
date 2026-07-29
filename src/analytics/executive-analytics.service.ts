@@ -53,13 +53,14 @@ export class ExecutiveAnalyticsService {
   async getExecutive(filters: AnalyticsFiltersDto) {
     const period = resolvePeriod(filters);
 
-    const [kpis, previous, tokenLedger, engagementTrends, newVsReturning] =
+    const [kpis, previous, tokenLedger, engagementTrends, newVsReturning, approvalCycle] =
       await Promise.all([
         this.buildKpis(period.start, period.end, filters),
         this.buildKpis(period.prevStart, period.prevEnd, filters),
         this.buildTokenLedger(period.year, filters),
         this.buildEngagementSeries(period.year, filters),
         this.buildNewVsReturningSeries(period.year, filters),
+        this.buildApprovalCycle(period.start, period.end, filters),
       ]);
 
     return {
@@ -71,6 +72,83 @@ export class ExecutiveAnalyticsService {
       tokenLedger,
       engagementTrends,
       newVsReturning,
+      approvalCycle,
+    };
+  }
+
+  // ─── Approval cycle time ─────────────────────────────────────────────────────
+  // How long requests wait at each approval stage. Decided requests are scoped
+  // to the filter period (by submission date); the pending-aging buckets are a
+  // live snapshot of everything still in the pipeline right now.
+
+  private async buildApprovalCycle(
+    start: Date,
+    end: Date,
+    filters: AnalyticsFiltersDto,
+  ) {
+    const decidedQb = this.tokenRequestRepo
+      .createQueryBuilder('r')
+      .select(
+        `AVG(CASE WHEN r."managerApprovedAt" IS NOT NULL
+              THEN EXTRACT(EPOCH FROM (r."managerApprovedAt" - r."createdAt")) END)`,
+        'toManagerSec',
+      )
+      .addSelect(
+        `AVG(CASE WHEN r."hrApprovedAt" IS NOT NULL AND r."managerApprovedAt" IS NOT NULL
+              THEN EXTRACT(EPOCH FROM (r."hrApprovedAt" - r."managerApprovedAt")) END)`,
+        'managerToHrSec',
+      )
+      .addSelect(
+        // Total submission → final approval. hrApprovedAt is null for options
+        // finalized at first level, where managerApprovedAt IS the final stamp.
+        `AVG(CASE WHEN r.status = :approvedStatus
+              THEN EXTRACT(EPOCH FROM (COALESCE(r."hrApprovedAt", r."managerApprovedAt") - r."createdAt")) END)`,
+        'totalSec',
+      )
+      .addSelect(`COUNT(CASE WHEN r.status = :approvedStatus THEN 1 END)`, 'approvedCount')
+      .where('r.createdAt >= :start AND r.createdAt < :end', { start, end })
+      .setParameter('approvedStatus', RequestStatus.APPROVED);
+    applyRequestFilters(decidedQb, 'r', filters);
+    const decided = await decidedQb.getRawOne<{
+      toManagerSec: string | null;
+      managerToHrSec: string | null;
+      totalSec: string | null;
+      approvedCount: string;
+    }>();
+
+    // Live snapshot: everything currently waiting on someone, bucketed by age
+    // of the current stage (pending → since submission; manager_approved →
+    // since manager approval). Raw SQL — the stage-conditional age doesn't
+    // express cleanly through the query builder.
+    const agingRows: { fresh: string; overSla: string; critical: string }[] =
+      await this.tokenRequestRepo.query(
+        `SELECT
+           SUM(CASE WHEN days <  3 THEN 1 ELSE 0 END) AS "fresh",
+           SUM(CASE WHEN days >= 3 AND days < 7 THEN 1 ELSE 0 END) AS "overSla",
+           SUM(CASE WHEN days >= 7 THEN 1 ELSE 0 END) AS "critical"
+         FROM (
+           SELECT EXTRACT(EPOCH FROM (NOW() - CASE
+             WHEN r.status = 'manager_approved' THEN COALESCE(r."managerApprovedAt", r."createdAt")
+             ELSE r."createdAt" END)) / 86400 AS days
+           FROM token_requests r
+           WHERE r.status IN ('pending', 'manager_approved')
+         ) t`,
+      );
+    const aging = agingRows[0];
+
+    const toHours = (sec: string | null | undefined) =>
+      sec == null ? null : round1(Number(sec) / 3600);
+
+    return {
+      avgHoursToManagerApproval: toHours(decided?.toManagerSec),
+      avgHoursManagerToHr: toHours(decided?.managerToHrSec),
+      avgHoursToFinalApproval: toHours(decided?.totalSec),
+      approvedCount: Number(decided?.approvedCount ?? 0),
+      pendingAging: {
+        withinSla: Number(aging?.fresh ?? 0),
+        overSla: Number(aging?.overSla ?? 0),
+        critical: Number(aging?.critical ?? 0),
+      },
     };
   }
 

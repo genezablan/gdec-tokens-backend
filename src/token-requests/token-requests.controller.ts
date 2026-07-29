@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { TokenRequestsService } from './token-requests.service';
 import { CoachingSessionsService } from './coaching-sessions.service';
+import { ApprovalSlaService } from './approval-sla.service';
 import { CreateTaskOffloadingRequestDto } from './dto/create-task-offloading-request.dto';
 import { CreateCoachingRequestDto } from './dto/create-coaching-request.dto';
 import { CreateLearningSubsidyRequestDto } from './dto/create-learning-subsidy-request.dto';
@@ -30,8 +31,19 @@ export class TokenRequestsController {
   constructor(
     private readonly tokenRequestsService: TokenRequestsService,
     private readonly coachingSessionsService: CoachingSessionsService,
+    private readonly approvalSlaService: ApprovalSlaService,
     private readonly s3Service: S3Service,
   ) {}
+
+  /**
+   * POST /token-requests/sla/run
+   * Admin: trigger the approver-SLA sweep immediately (it also runs daily via cron).
+   */
+  @Post('sla/run')
+  @Roles(UserRole.ADMIN)
+  runSlaSweep() {
+    return this.approvalSlaService.runNow();
+  }
 
   /**
    * GET /token-requests/presigned-upload?fileName=x&contentType=y
