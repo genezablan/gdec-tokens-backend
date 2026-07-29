@@ -35,6 +35,14 @@ export class DevelopmentOption {
   isActive: boolean;
 
   /**
+   * When false, first-level (manager/coach) approval finalizes the request:
+   * tokens are deducted immediately and HR is never queued. Evaluated at
+   * approval time, so toggling it applies to in-flight requests too.
+   */
+  @Column({ default: true })
+  requiresHrApproval: boolean;
+
+  /**
    * Stores flexible business rules as JSON per type:
    * - task_offloading: { consecutiveYearRepeatAllowed: false }
    * - coaching:        { sessionsRequired: 3, sameCoachRequired: true }

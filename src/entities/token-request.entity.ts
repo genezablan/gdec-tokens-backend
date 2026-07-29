@@ -126,6 +126,16 @@ export class TokenRequest {
   @Column({ type: 'timestamptz', nullable: true })
   cancelledAt: Date;
 
+  // ─── Approver SLA tracking ────────────────────────────────────────────────────
+
+  /** When the current-stage approver was last reminded that this request is overdue. */
+  @Column({ type: 'timestamptz', nullable: true })
+  slaRemindedAt: Date | null;
+
+  /** When the overdue request was escalated past the approver. Sent at most once per stage. */
+  @Column({ type: 'timestamptz', nullable: true })
+  slaEscalatedAt: Date | null;
+
   // ─── Request-specific form data ──────────────────────────────────────────────
 
   /**

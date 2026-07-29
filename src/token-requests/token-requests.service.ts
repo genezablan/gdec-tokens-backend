@@ -75,6 +75,42 @@ export class TokenRequestsService {
   }
 
   /**
+   * Tokens tied up in requests that are still in the approval pipeline.
+   * Tokens are only deducted at final approval, so the raw balance overstates
+   * what an employee can still spend — every balance check must subtract this.
+   */
+  private async getCommittedTokens(employeeId: string, year: number): Promise<number> {
+    const row = await this.requestRepo
+      .createQueryBuilder('r')
+      .select('COALESCE(SUM(r."tokenCost"), 0)', 'committed')
+      .where('r."employeeId" = :employeeId', { employeeId })
+      .andWhere('r.year = :year', { year })
+      .andWhere('r.status IN (:...statuses)', {
+        statuses: [RequestStatus.PENDING, RequestStatus.MANAGER_APPROVED],
+      })
+      .getRawOne<{ committed: string }>();
+    return Number(row?.committed ?? 0);
+  }
+
+  /** Balance check that counts in-flight requests against the remaining tokens. */
+  private async assertSpendableBalance(
+    employeeId: string,
+    year: number,
+    remaining: number,
+    required: number,
+  ): Promise<void> {
+    const committed = await this.getCommittedTokens(employeeId, year);
+    const spendable = remaining - committed;
+    if (spendable < required) {
+      throw new BadRequestException(
+        committed > 0
+          ? `Insufficient tokens. Required: ${required}, Available: ${remaining}, of which ${committed} already committed to requests awaiting approval.`
+          : `Insufficient tokens. Required: ${required}, Available: ${remaining}`,
+      );
+    }
+  }
+
+  /**
    * Resolve the manager for an employee.
    * Uses immediateSupervisorId if that user has approver role,
    * otherwise falls back to any admin.
@@ -247,11 +283,24 @@ export class TokenRequestsService {
       );
     }
 
-    if (balance.remaining < option.tokenCost) {
+    // One OTJ/special project per year — includes requests still in the pipeline.
+    const existingThisYear = await this.requestRepo.findOne({
+      where: {
+        employeeId,
+        type: DevelopmentOptionType.TASK_OFFLOADING,
+        status: In([RequestStatus.PENDING, RequestStatus.MANAGER_APPROVED, RequestStatus.APPROVED]),
+        year,
+      },
+    });
+    if (existingThisYear) {
       throw new BadRequestException(
-        `Insufficient tokens. Required: ${option.tokenCost}, Available: ${balance.remaining}`,
+        existingThisYear.status === RequestStatus.APPROVED
+          ? 'Task Offloading is limited to one project per year — you already have an approved request this year.'
+          : 'You already have a Task Offloading request awaiting approval this year.',
       );
     }
+
+    await this.assertSpendableBalance(employeeId, year, balance.remaining, option.tokenCost);
 
     return this.saveAndNotify({
       employeeId,
@@ -301,11 +350,21 @@ export class TokenRequestsService {
       throw new BadRequestException('You cannot nominate yourself as your coach');
     }
 
-    if (balance.remaining < option.tokenCost) {
+    // One coaching cycle in the pipeline at a time.
+    const inFlightCoaching = await this.requestRepo.findOne({
+      where: {
+        employeeId,
+        type: DevelopmentOptionType.COACHING,
+        status: In([RequestStatus.PENDING, RequestStatus.MANAGER_APPROVED]),
+      },
+    });
+    if (inFlightCoaching) {
       throw new BadRequestException(
-        `Insufficient tokens. Required: ${option.tokenCost}, Available: ${balance.remaining}`,
+        'You already have a coaching request awaiting approval. Wait for it to be decided (or cancel it) before submitting another.',
       );
     }
+
+    await this.assertSpendableBalance(employeeId, year, balance.remaining, option.tokenCost);
 
     // Use coach as the first-level approver (managerId = coach.id).
     // snapshotManagerName captures the coach's name as the first approver.
@@ -367,11 +426,7 @@ export class TokenRequestsService {
         `Subsidy amount ₱${dto.subsidyAmount} exceeds the maximum of ₱${maxTokens * subsidyPerToken}`,
       );
     }
-    if (balance.remaining < tokenCost) {
-      throw new BadRequestException(
-        `Insufficient tokens. Required: ${tokenCost}, Available: ${balance.remaining}`,
-      );
-    }
+    await this.assertSpendableBalance(employeeId, year, balance.remaining, tokenCost);
 
     return this.saveAndNotify({
       employeeId,
@@ -414,8 +469,28 @@ export class TokenRequestsService {
       throw new ForbiddenException('You are not the assigned manager for this request');
     }
 
-    request.status = RequestStatus.MANAGER_APPROVED;
     request.managerApprovedAt = new Date();
+
+    // Options configured without HR review finalize at first-level approval.
+    // The flag is read live (not snapshotted) so a policy change applies to
+    // requests already in flight.
+    if (request.developmentOption && !request.developmentOption.requiresHrApproval) {
+      request.status = RequestStatus.APPROVED;
+      // Fresh stage ⇒ fresh SLA clock (no next stage here, but keep rows clean).
+      request.slaRemindedAt = null;
+      request.slaEscalatedAt = null;
+      await this.requestRepo.save(request);
+      this.logger.log(
+        `Request ${requestId} approved at first level by ${approverId} (option does not require HR approval)`,
+      );
+      await this.finalizeApproval(request);
+      return this.findRequest(requestId);
+    }
+
+    request.status = RequestStatus.MANAGER_APPROVED;
+    // The request enters a new queue — restart SLA tracking for the HR stage.
+    request.slaRemindedAt = null;
+    request.slaEscalatedAt = null;
     await this.requestRepo.save(request);
     this.logger.log(`Request ${requestId} manager-approved by ${approverId}`);
 
@@ -485,10 +560,19 @@ export class TokenRequestsService {
     await this.requestRepo.save(request);
     this.logger.log(`Request ${requestId} HR-approved by ${hrUserId}`);
 
-    // ── Deduct tokens ──
+    await this.finalizeApproval(request);
+
+    return this.findRequest(requestId);
+  }
+
+  /**
+   * Shared tail of a final approval — whichever level finalized it (HR, or the
+   * manager/coach when the option skips HR review): deduct tokens and tell the
+   * employee. The request must already be saved with status APPROVED.
+   */
+  private async finalizeApproval(request: TokenRequest): Promise<void> {
     await this.tokenBalancesService.deductTokens(request.employeeId, request.year, request.tokenCost);
 
-    // ── Notify employee ──
     try {
       await this.emailService.sendApprovalNotification({
         employeeEmail: request.employee.email,
@@ -502,7 +586,6 @@ export class TokenRequestsService {
       this.logger.warn(`Failed to send approval email: ${(err as Error).message}`);
     }
 
-    // ── In-app: notify employee final approval ──
     this.notificationsService.create(request.employeeId, {
       title: 'Request Approved! 🎉',
       message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been fully approved. ${request.tokenCost} token${request.tokenCost !== 1 ? 's' : ''} have been deducted.`,
@@ -514,8 +597,6 @@ export class TokenRequestsService {
           : '/my-request',
       },
     }).catch(() => {});
-
-    return this.findRequest(requestId);
   }
 
   // ─── Reject ───────────────────────────────────────────────────────────────────
@@ -843,6 +924,10 @@ export class TokenRequestsService {
     request.rejectedByLevel = null as any;
     request.rejectionComment = null as any;
     request.rejectedAt = null as any;
+    // Back at the start of the pipeline — the SLA clock starts over.
+    request.slaRemindedAt = null;
+    request.slaEscalatedAt = null;
+    request.managerApprovedAt = null as any;
 
     await this.requestRepo.save(request);
     this.logger.log(`Request ${requestId} resubmitted by employee ${employeeId}`);
