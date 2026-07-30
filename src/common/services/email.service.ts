@@ -1196,10 +1196,12 @@ export class EmailService {
     excerpt: string;
     authorName: string;
     createdAt?: Date;
+    announcementId?: string;
   }): Promise<void> {
-    const { recipients, title, excerpt, authorName, createdAt } = opts;
+    const { recipients, title, excerpt, authorName, createdAt, announcementId } = opts;
     const clean = [...new Set(recipients.filter((e) => !!e))];
     if (clean.length === 0) return;
+    const announcementUrl = `${this.frontendUrl}/announcement${announcementId ? `/${announcementId}` : ''}`;
 
     const content = `
       <p style="margin:0 0 6px;font-size:15px;">Hi there,</p>
@@ -1212,10 +1214,10 @@ export class EmailService {
         content: excerpt,
         accent: BRAND.accent,
       })}
-      ${this.button('View Announcement', `${this.frontendUrl}/announcement`, BRAND.primary)}
+      ${this.button('View Announcement', announcementUrl, BRAND.primary)}
     `;
     const htmlBody = this.buildTemplate(content);
-    const textBody = `New announcement: ${title}\n\n${this.excerpt(excerpt)}\n\nView it here: ${this.frontendUrl}/announcement\n\nBest regards,\nGreat Deals Academy`;
+    const textBody = `New announcement: ${title}\n\n${this.excerpt(excerpt)}\n\nView it here: ${announcementUrl}\n\nBest regards,\nGreat Deals Academy`;
 
     // SES caps a single message at 50 recipients; BCC in batches of 45.
     const BATCH = 45;

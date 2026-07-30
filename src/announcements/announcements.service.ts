@@ -128,7 +128,7 @@ export class AnnouncementsService {
               title: 'New announcement',
               message: announcement.title,
               type: NotificationType.INFO,
-              metadata: { deeplink: '/announcement', announcementId: announcement.id },
+              metadata: { deeplink: `/announcement/${announcement.id}`, announcementId: announcement.id },
             })
             .catch((err) =>
               this.logger.warn(`Announcement in-app notify failed for ${u.id}: ${errMsg(err)}`),
@@ -149,6 +149,7 @@ export class AnnouncementsService {
         excerpt: announcement.body ?? '',
         authorName: author.fullName,
         createdAt: announcement.createdAt,
+        announcementId: announcement.id,
       });
     } catch (err) {
       this.logger.warn(`Announcement email fan-out failed: ${errMsg(err)}`);
