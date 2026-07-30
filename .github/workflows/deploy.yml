@@ -26,7 +26,8 @@ jobs:
 
             echo "==> Pulling latest code (staging)..."
             cd "$APP_DIR"
-            git pull origin staging
+            git fetch origin
+            git reset --hard origin/staging
 
             echo "==> Installing dependencies..."
             npm ci
@@ -61,7 +62,8 @@ jobs:
 
             echo "==> Pulling latest code (production)..."
             cd "$APP_DIR"
-            git pull origin master
+            git fetch origin
+            git reset --hard origin/master
 
             echo "==> Installing dependencies..."
             npm ci
