@@ -286,6 +286,30 @@ export class TokenRequestsController {
   }
 
   /**
+   * PATCH /token-requests/:id/undo-decision
+   * Reverse your own approve/reject within the undo window (1 hour), restoring the
+   * request's previous status and refunding any tokens the decision deducted.
+   *
+   * Admins may undo anyone's decision. Errors are meaningful to the client:
+   *   403 — not your decision
+   *   409 — already undone, or something downstream has acted on it
+   *   410 — the window has passed
+   */
+  @Patch(':id/undo-decision')
+  @Roles(
+    UserRole.APPROVER,
+    UserRole.COACH,
+    UserRole.HR_APPROVER as UserRole,
+    UserRole.ADMIN,
+  )
+  undoDecision(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.tokenRequestsService.undoDecision(id, user);
+  }
+
+  /**
    * PATCH /token-requests/:id/resubmit
    * Employee: update and resubmit a rejected request back to pending.
    */

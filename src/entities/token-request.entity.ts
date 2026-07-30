@@ -126,6 +126,40 @@ export class TokenRequest {
   @Column({ type: 'timestamptz', nullable: true })
   cancelledAt: Date;
 
+  // ─── Undo tracking ────────────────────────────────────────────────────────────
+
+  /**
+   * The last approve/reject decision made on this request, kept so it can be
+   * reversed within APPROVAL_UNDO_WINDOW_MS. Cleared whenever the request
+   * re-enters the pipeline by another route (resubmit, cancel).
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  lastDecisionAt: Date | null;
+
+  /** Who made the decision — only they (or an admin) may undo it. */
+  @Column({ type: 'uuid', nullable: true })
+  lastDecisionById: string | null;
+
+  @ManyToOne(() => User, { eager: false, nullable: true })
+  @JoinColumn({ name: 'lastDecisionById' })
+  lastDecisionBy: User;
+
+  /** 'manager_approve' | 'hr_approve' | 'manager_reject' | 'hr_reject' */
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  lastDecisionType: string | null;
+
+  /**
+   * Status to restore on undo. Required rather than derived: an HR rejection is
+   * legal from both `pending` and `manager_approved`, so the decision type alone
+   * doesn't identify where to go back to.
+   */
+  @Column({ type: 'enum', enum: RequestStatus, nullable: true })
+  previousStatus: RequestStatus | null;
+
+  /** Set when the decision above has been undone — blocks undoing it twice. */
+  @Column({ type: 'timestamptz', nullable: true })
+  lastDecisionUndoneAt: Date | null;
+
   // ─── Approver SLA tracking ────────────────────────────────────────────────────
 
   /** When the current-stage approver was last reminded that this request is overdue. */

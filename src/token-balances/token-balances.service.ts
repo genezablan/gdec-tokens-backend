@@ -5,7 +5,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { TokenBalance } from '../entities/token-balance.entity';
 import { User } from '../entities/user.entity';
 import { EmployeeStatus } from '../common/enums';
@@ -203,14 +203,26 @@ export class TokenBalancesService {
 
   /**
    * Refund tokens on request rejection or cancellation.
+   *
+   * Pass `manager` to run inside a caller-owned transaction — the approval-undo
+   * path does this so the status change and the refund commit or roll back
+   * together, rather than leaving a reverted request with tokens still spent.
    */
   async refundTokens(
     userId: string,
     year: number,
     amount: number,
+    manager?: EntityManager,
   ): Promise<TokenBalanceSummary> {
-    const balance = await this.tokenBalanceRepository.findOne({
+    const repo = manager
+      ? manager.getRepository(TokenBalance)
+      : this.tokenBalanceRepository;
+
+    const balance = await repo.findOne({
       where: { userId, year },
+      // Serialize concurrent adjustments to the same balance row when we're in a
+      // transaction; a plain read can't take a row lock.
+      ...(manager ? { lock: { mode: 'pessimistic_write' as const } } : {}),
     });
 
     if (!balance) {
@@ -220,7 +232,7 @@ export class TokenBalancesService {
     }
 
     balance.used = Math.max(0, balance.used - amount);
-    await this.tokenBalanceRepository.save(balance);
+    await repo.save(balance);
     this.logger.log(
       `Refunded ${amount} token(s) to user ${userId} for year ${year}. Used now: ${balance.used}`,
     );

@@ -4,14 +4,20 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  ConflictException,
+  GoneException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { TokenRequest } from '../entities/token-request.entity';
 import { User } from '../entities/user.entity';
 import { DevelopmentOption } from '../entities/development-option.entity';
+import { CoachingSession } from '../entities/coaching-session.entity';
 import { TokenBalancesService } from '../token-balances/token-balances.service';
-import { EmailService } from '../common/services/email.service';
+import {
+  APPROVAL_UNDO_WINDOW_MS,
+  EmailService,
+} from '../common/services/email.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../entities/notification.entity';
 import { RequestStatus, UserRole, DevelopmentOptionType } from '../common/enums';
@@ -20,6 +26,24 @@ import { CreateCoachingRequestDto } from './dto/create-coaching-request.dto';
 import { CreateLearningSubsidyRequestDto } from './dto/create-learning-subsidy-request.dto';
 import { RejectTokenRequestDto } from './dto/reject-token-request.dto';
 import { ResubmitTokenRequestDto } from './dto/resubmit-token-request.dto';
+
+/**
+ * Bell-entry titles for the outcome of an approve/reject.
+ *
+ * Shared between the code that creates them and the undo path that deletes them —
+ * inline strings on both sides would drift apart the first time someone reworded
+ * one, and the undo would silently stop cleaning up.
+ */
+const DECISION_TITLES = {
+  /** Employee: fully approved, tokens deducted. */
+  APPROVED_FINAL: 'Request Approved! 🎉',
+  /** Employee: first-level approved, now queued for HR. */
+  APPROVED_BY_MANAGER: 'Request Approved by Manager',
+  /** HR: a request has entered their queue. */
+  PENDING_HR: 'Request Pending HR Approval',
+  /** Employee: rejected at either level. */
+  REJECTED: 'Request Not Approved',
+} as const;
 
 @Injectable()
 export class TokenRequestsService {
@@ -46,6 +70,35 @@ export class TokenRequestsService {
     });
     if (!request) throw new NotFoundException(`Token request ${id} not found`);
     return request;
+  }
+
+  /**
+   * Record an approve/reject so it can be reversed within the undo window.
+   * Mutates the request — the caller saves.
+   *
+   * `previousStatus` is the status the request held *before* this decision, which
+   * is where an undo puts it back.
+   */
+  private stampDecision(
+    request: TokenRequest,
+    type: 'manager_approve' | 'hr_approve' | 'manager_reject' | 'hr_reject',
+    actorId: string,
+    previousStatus: RequestStatus,
+  ): void {
+    request.lastDecisionAt = new Date();
+    request.lastDecisionById = actorId;
+    request.lastDecisionType = type;
+    request.previousStatus = previousStatus;
+    request.lastDecisionUndoneAt = null;
+  }
+
+  /** Drop the undo record — the request has moved on by some other route. */
+  private clearDecision(request: TokenRequest): void {
+    request.lastDecisionAt = null;
+    request.lastDecisionById = null;
+    request.lastDecisionType = null;
+    request.previousStatus = null;
+    request.lastDecisionUndoneAt = null;
   }
 
   /**
@@ -470,6 +523,12 @@ export class TokenRequestsService {
     }
 
     request.managerApprovedAt = new Date();
+    this.stampDecision(
+      request,
+      'manager_approve',
+      approverId,
+      RequestStatus.PENDING,
+    );
 
     // Options configured without HR review finalize at first-level approval.
     // The flag is read live (not snapshotted) so a policy change applies to
@@ -523,7 +582,7 @@ export class TokenRequestsService {
 
       // ── In-app: notify HR ──
       this.notificationsService.create(hrUser.id, {
-        title: 'Request Pending HR Approval',
+        title: DECISION_TITLES.PENDING_HR,
         message: `${request.employee.firstName} ${request.employee.lastName}'s ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been approved by the ${request.type === DevelopmentOptionType.COACHING ? 'coach' : 'manager'} and needs your review.`,
         type: NotificationType.INFO,
         requestId: request.id,
@@ -533,7 +592,7 @@ export class TokenRequestsService {
 
     // ── In-app: notify employee that manager approved ──
     this.notificationsService.create(request.employeeId, {
-      title: 'Request Approved by Manager',
+      title: DECISION_TITLES.APPROVED_BY_MANAGER,
       message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been approved by your ${request.type === DevelopmentOptionType.COACHING ? 'coach' : 'manager'} and is now pending HR review.`,
       type: NotificationType.INFO,
       requestId: request.id,
@@ -557,6 +616,12 @@ export class TokenRequestsService {
     request.status = RequestStatus.APPROVED;
     request.hrId = hrUserId;
     request.hrApprovedAt = new Date();
+    this.stampDecision(
+      request,
+      'hr_approve',
+      hrUserId,
+      RequestStatus.MANAGER_APPROVED,
+    );
     await this.requestRepo.save(request);
     this.logger.log(`Request ${requestId} HR-approved by ${hrUserId}`);
 
@@ -587,7 +652,7 @@ export class TokenRequestsService {
     }
 
     this.notificationsService.create(request.employeeId, {
-      title: 'Request Approved! 🎉',
+      title: DECISION_TITLES.APPROVED_FINAL,
       message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been fully approved. ${request.tokenCost} token${request.tokenCost !== 1 ? 's' : ''} have been deducted.`,
       type: NotificationType.SUCCESS,
       requestId: request.id,
@@ -624,11 +689,22 @@ export class TokenRequestsService {
       throw new ForbiddenException('You are not the assigned manager for this request');
     }
 
+    // Captured before the overwrite — an HR rejection can arrive from either
+    // `pending` or `manager_approved`, so this is the only record of where an
+    // undo should put the request back.
+    const statusBeforeRejection = request.status;
+
     request.status = RequestStatus.REJECTED;
     request.rejectedById = rejectorId;
     request.rejectedByLevel = level;
     request.rejectionComment = dto.comment;
     request.rejectedAt = new Date();
+    this.stampDecision(
+      request,
+      level === 'manager' ? 'manager_reject' : 'hr_reject',
+      rejectorId,
+      statusBeforeRejection,
+    );
     await this.requestRepo.save(request);
     this.logger.log(`Request ${requestId} rejected by ${rejectorId} (${level})`);
 
@@ -646,7 +722,7 @@ export class TokenRequestsService {
 
     // ── In-app: notify employee rejection ──
     this.notificationsService.create(request.employeeId, {
-      title: 'Request Not Approved',
+      title: DECISION_TITLES.REJECTED,
       message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request was not approved. Reason: ${dto.comment}`,
       type: NotificationType.ERROR,
       requestId: request.id,
@@ -654,6 +730,315 @@ export class TokenRequestsService {
     }).catch(() => {});
 
     return this.findRequest(requestId);
+  }
+
+  // ─── Undo a decision ──────────────────────────────────────────────────────────
+
+  /**
+   * The status each decision type produces. An undo is only valid while the
+   * request is still sitting in that status — if it has moved on, something
+   * downstream has already acted on the decision and reversing it would corrupt
+   * that work.
+   */
+  private static readonly DECISION_RESULT_STATUS: Record<
+    string,
+    RequestStatus[]
+  > = {
+    // A manager approval lands on MANAGER_APPROVED, or APPROVED when the option
+    // skips HR review.
+    manager_approve: [RequestStatus.MANAGER_APPROVED, RequestStatus.APPROVED],
+    hr_approve: [RequestStatus.APPROVED],
+    manager_reject: [RequestStatus.REJECTED],
+    hr_reject: [RequestStatus.REJECTED],
+  };
+
+  /**
+   * PATCH /token-requests/:id/undo-decision
+   * Reverse the approve/reject recorded on this request, restoring the status it
+   * held beforehand and refunding any tokens the decision deducted.
+   *
+   * Only the approver who made the decision — or an admin — may undo it, and only
+   * within APPROVAL_UNDO_WINDOW_MS. The window is a ceiling, not a guarantee: an
+   * undo also dies the moment anything downstream acts on the decision (HR
+   * approves, the employee resubmits or cancels, a coaching session is booked).
+   *
+   * The status flip and the token refund share one transaction, so a request can
+   * never end up reverted with its tokens still spent.
+   */
+  async undoDecision(requestId: string, actor: User): Promise<TokenRequest> {
+    const isAdmin = actor.roles.includes(UserRole.ADMIN);
+
+    // Captured for the post-commit notifications.
+    let refunded = 0;
+    let restoredStatus: RequestStatus;
+    let decisionType: string;
+
+    await this.requestRepo.manager.transaction(async (manager) => {
+      // Lock the row first: without this, two undos (or an undo racing an HR
+      // approval) could both pass the guards below on stale reads.
+      //
+      // No `relations` here on purpose — TypeORM emits relations as LEFT JOINs,
+      // and Postgres rejects FOR UPDATE against the nullable side of an outer
+      // join. Nothing below needs them; the notification step re-reads the
+      // request with its relations after the transaction commits.
+      const request = await manager.findOne(TokenRequest, {
+        where: { id: requestId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!request)
+        throw new NotFoundException(`Token request ${requestId} not found`);
+
+      // ── Guard 1: a decision exists and is still inside the window ──
+      if (!request.lastDecisionAt || !request.lastDecisionType) {
+        throw new BadRequestException('This request has no decision to undo');
+      }
+      // Elapsed time is computed here rather than in SQL on purpose: the app and
+      // the database can disagree about the current time, and the decision
+      // timestamp was written by the app.
+      const elapsed = Date.now() - new Date(request.lastDecisionAt).getTime();
+      if (elapsed > APPROVAL_UNDO_WINDOW_MS) {
+        throw new GoneException(
+          'The time window for undoing this decision has passed',
+        );
+      }
+
+      // ── Guard 2: not already undone ──
+      if (request.lastDecisionUndoneAt) {
+        throw new ConflictException('This decision has already been undone');
+      }
+
+      // ── Guard 3: nothing downstream has moved the request on ──
+      const expected =
+        TokenRequestsService.DECISION_RESULT_STATUS[request.lastDecisionType] ??
+        [];
+      if (!expected.includes(request.status)) {
+        throw new ConflictException(
+          `This decision can no longer be undone — the request has since moved to "${request.status}"`,
+        );
+      }
+
+      // ── Guard 4: only the decider, or an admin ──
+      if (!isAdmin && request.lastDecisionById !== actor.id) {
+        throw new ForbiddenException(
+          'Only the approver who made this decision can undo it',
+        );
+      }
+
+      // ── Guard 5: no coaching sessions booked against the approval ──
+      // Reverting an approved coaching request out from under a booked session
+      // would leave the session pointing at a request that isn't approved.
+      if (
+        request.status === RequestStatus.APPROVED &&
+        request.type === DevelopmentOptionType.COACHING
+      ) {
+        const sessions = await manager.count(CoachingSession, {
+          where: { tokenRequestId: request.id },
+        });
+        if (sessions > 0) {
+          throw new ConflictException(
+            'This approval can no longer be undone — coaching sessions have already been booked',
+          );
+        }
+      }
+
+      if (!request.previousStatus) {
+        // Only reachable for rows stamped before this column existed.
+        throw new BadRequestException(
+          'This decision predates undo support and cannot be reversed',
+        );
+      }
+
+      decisionType = request.lastDecisionType;
+
+      // ── Refund, if this decision was the one that spent the tokens ──
+      // Rejections never deduct, and a manager approval that only queued the
+      // request for HR hasn't deducted yet either.
+      if (request.status === RequestStatus.APPROVED) {
+        await this.tokenBalancesService.refundTokens(
+          request.employeeId,
+          request.year,
+          request.tokenCost,
+          manager,
+        );
+        refunded = request.tokenCost;
+      }
+
+      // ── Reverse the decision's own field writes ──
+      switch (decisionType) {
+        case 'manager_approve':
+          request.managerApprovedAt = null as any;
+          break;
+        case 'hr_approve':
+          request.hrId = null as any;
+          request.hrApprovedAt = null as any;
+          break;
+        case 'manager_reject':
+        case 'hr_reject':
+          request.rejectedById = null as any;
+          request.rejectedByLevel = null as any;
+          request.rejectionComment = null as any;
+          request.rejectedAt = null as any;
+          break;
+      }
+
+      request.status = request.previousStatus;
+      restoredStatus = request.status;
+
+      // The request is live again at an earlier stage — restart that stage's SLA
+      // clock so it isn't instantly treated as overdue or already escalated.
+      request.slaRemindedAt = null;
+      request.slaEscalatedAt = null;
+
+      // Keep the decision record but mark it spent, so the same decision can't be
+      // undone twice while the history of who did what stays readable.
+      request.lastDecisionUndoneAt = new Date();
+
+      await manager.save(TokenRequest, request);
+    });
+
+    this.logger.log(
+      `Request ${requestId} decision (${decisionType!}) undone by ${actor.id}` +
+        `${refunded > 0 ? `, refunded ${refunded} token(s)` : ''}` +
+        ` → ${restoredStatus!}`,
+    );
+
+    const request = await this.findRequest(requestId);
+    await this.notifyDecisionReversed(request, actor, {
+      decisionType: decisionType!,
+      refunded,
+    });
+
+    return request;
+  }
+
+  /**
+   * Tell everyone who was told about the original decision that it no longer
+   * stands, and clear the now-wrong bell entries that decision produced.
+   *
+   * Best-effort throughout: the reversal is already committed, so a failed email
+   * must never surface as a failed undo.
+   */
+  private async notifyDecisionReversed(
+    request: TokenRequest,
+    actor: User,
+    opts: { decisionType: string; refunded: number },
+  ): Promise<void> {
+    const { decisionType, refunded } = opts;
+    const optionName = request.developmentOption?.name ?? request.type;
+    const optionLabel = optionName.replace(/_/g, ' ');
+    const wasApproval = decisionType.endsWith('_approve');
+
+    // HR only needs telling if the request was in (or has returned to) their queue.
+    const hrWasInvolved =
+      decisionType === 'manager_approve' || decisionType === 'hr_reject';
+    const hrUsers = hrWasInvolved
+      ? await this.userRepo
+          .createQueryBuilder('user')
+          .where(':role = ANY(user.roles)', { role: UserRole.HR_APPROVER })
+          .andWhere('user.isActive = true')
+          .getMany()
+      : [];
+
+    // ── Drop the stale bell entries the reversed decision created ──
+    // Targeted at the specific outcome titles rather than everything on the
+    // request, so the submission/earlier history survives.
+    try {
+      await this.notificationsService.deleteForRequestByTitles(
+        request.id,
+        [request.employeeId],
+        wasApproval
+          ? [
+              DECISION_TITLES.APPROVED_FINAL,
+              DECISION_TITLES.APPROVED_BY_MANAGER,
+            ]
+          : [DECISION_TITLES.REJECTED],
+      );
+      // A manager approval that queued the request for HR also put an entry in
+      // every HR approver's bell; undoing it takes the request back out.
+      if (decisionType === 'manager_approve' && hrUsers.length > 0) {
+        await this.notificationsService.deleteForRequestByTitles(
+          request.id,
+          hrUsers.map((u) => u.id),
+          [DECISION_TITLES.PENDING_HR],
+        );
+      }
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Failed to clear stale notifications for ${request.id}: ${(err as Error).message}`,
+      );
+    }
+
+    const actorRole = this.describeActorRole(request, actor, decisionType);
+    const stageLabel =
+      request.status === RequestStatus.MANAGER_APPROVED
+        ? 'Awaiting HR review'
+        : 'Awaiting review';
+
+    // ── Employee: email + bell ──
+    try {
+      await this.emailService.sendDecisionReversedNotification({
+        employeeEmail: request.employee.email,
+        employeeName: `${request.employee.firstName} ${request.employee.lastName}`,
+        optionName,
+        reversed: wasApproval ? 'approval' : 'rejection',
+        stageLabel,
+        tokensRefunded: refunded,
+        actorRole,
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Failed to send decision-reversed email: ${(err as Error).message}`,
+      );
+    }
+
+    this.notificationsService
+      .create(request.employeeId, {
+        title: wasApproval ? 'Approval Withdrawn' : 'Rejection Withdrawn',
+        message: wasApproval
+          ? `The approval of your ${optionLabel} request was withdrawn by your ${actorRole} and it is back under review.${refunded > 0 ? ` ${refunded} token${refunded !== 1 ? 's' : ''} returned to your balance.` : ''}`
+          : `Your ${optionLabel} request was not rejected after all — your ${actorRole} withdrew that decision and it is back under review.`,
+        type: NotificationType.WARNING,
+        requestId: request.id,
+        metadata: { deeplink: '/my-request' },
+      })
+      .catch(() => {});
+
+    // ── HR: the request has left, or re-entered, their queue ──
+    for (const hrUser of hrUsers) {
+      const returned = request.status === RequestStatus.MANAGER_APPROVED;
+      this.notificationsService
+        .create(hrUser.id, {
+          title: returned
+            ? 'Request Back in Your Queue'
+            : 'Request Withdrawn from Your Queue',
+          message: returned
+            ? `${request.employee.firstName} ${request.employee.lastName}'s ${optionLabel} request is awaiting your review again — the earlier decision was undone.`
+            : `${request.employee.firstName} ${request.employee.lastName}'s ${optionLabel} request no longer needs your review — the ${actorRole} undid their approval.`,
+          type: NotificationType.INFO,
+          requestId: request.id,
+          metadata: { deeplink: '/approval' },
+        })
+        .catch(() => {});
+    }
+  }
+
+  /** How the employee should hear the reverser described. */
+  private describeActorRole(
+    request: TokenRequest,
+    actor: User,
+    decisionType: string,
+  ): 'manager' | 'coach' | 'HR' | 'administrator' {
+    if (decisionType.startsWith('hr_')) return 'HR';
+    if (request.type === DevelopmentOptionType.COACHING) return 'coach';
+    // An admin acting on someone else's decision shouldn't be reported as the
+    // employee's manager.
+    if (
+      actor.id !== request.managerId &&
+      actor.roles.includes(UserRole.ADMIN)
+    ) {
+      return 'administrator';
+    }
+    return 'manager';
   }
 
   // ─── Cancel ───────────────────────────────────────────────────────────────────
@@ -697,6 +1082,8 @@ export class TokenRequestsService {
 
     request.status = RequestStatus.CANCELLED;
     request.cancelledAt = new Date();
+    // Withdrawn by the employee — any pending approver undo is moot.
+    this.clearDecision(request);
     await this.requestRepo.save(request);
     this.logger.log(
       `Request ${requestId} cancelled by employee ${employeeId} (was: ${wasManagerApproved ? 'manager_approved' : 'pending'})`,
@@ -928,6 +1315,10 @@ export class TokenRequestsService {
     request.slaRemindedAt = null;
     request.slaEscalatedAt = null;
     request.managerApprovedAt = null as any;
+    // The rejection this resubmit answers is no longer reversible — the employee
+    // has already moved the request on. (The status guard in undoDecision would
+    // catch this anyway; clearing keeps the row honest.)
+    this.clearDecision(request);
 
     await this.requestRepo.save(request);
     this.logger.log(`Request ${requestId} resubmitted by employee ${employeeId}`);

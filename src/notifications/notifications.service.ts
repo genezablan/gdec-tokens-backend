@@ -144,4 +144,35 @@ export class NotificationsService {
   async remove(notificationId: string, userId: string): Promise<void> {
     await this.repo.delete({ id: notificationId, userId });
   }
+
+  /**
+   * Delete the notifications a since-reversed action generated, so the bell
+   * doesn't keep showing an outcome that no longer holds (e.g. "Request
+   * Approved 🎉" after the approver undid the approval).
+   *
+   * Matched by title rather than by a `createdAt` cutoff on purpose: `createdAt`
+   * is written by the database (`@CreateDateColumn`) while the decision timestamp
+   * it would be compared against is written by the application, so any clock
+   * drift between the two silently matches nothing. Callers pass the titles from
+   * shared constants, so the create and delete sides can't drift apart.
+   *
+   * Returns the number deleted.
+   */
+  async deleteForRequestByTitles(
+    requestId: string,
+    userIds: string[],
+    titles: string[],
+  ): Promise<number> {
+    if (userIds.length === 0 || titles.length === 0) return 0;
+
+    const result = await this.repo
+      .createQueryBuilder()
+      .delete()
+      .where('"requestId" = :requestId', { requestId })
+      .andWhere('"userId" IN (:...userIds)', { userIds: [...new Set(userIds)] })
+      .andWhere('title IN (:...titles)', { titles })
+      .execute();
+
+    return result.affected ?? 0;
+  }
 }

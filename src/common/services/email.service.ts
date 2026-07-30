@@ -29,6 +29,19 @@ export type TokenReminderCheckpoint = 'Q1' | 'Q2' | 'Q3' | 'OCT' | 'NOV' | 'FINA
 export const APPROVAL_SLA_DAYS = 3;
 export const APPROVAL_ESCALATION_DAYS = 6;
 
+/**
+ * How long an approver has to reverse their own approve/reject decision.
+ * Measured from the moment the decision was written (TokenRequest.lastDecisionAt),
+ * not from page load or email delivery.
+ *
+ * This is a ceiling, not a guarantee — an undo also dies the moment anything
+ * downstream acts on the decision (HR approves, the employee resubmits or
+ * cancels, a coaching session gets booked). See TokenRequestsService.undoDecision.
+ *
+ * The frontend mirrors this value in `src/constants/approval.js`; keep them in sync.
+ */
+export const APPROVAL_UNDO_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const BRAND = {
@@ -503,6 +516,69 @@ export class EmailService {
       subject: 'Update on Your Development Token Request — Rejected',
       htmlBody: this.buildTemplate(content),
       textBody: `Hello ${employeeName},\n\nYour Development Token request has been reviewed and was not approved at this time.\n\nReason / Remarks:\n${comment}\n\nYou may revise and resubmit your request through the application once the necessary updates are made.\n\nIf you need clarification, please reach out to your Manager or HR.\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /**
+   * [TO EMPLOYEE] Sent when an approver reverses their own approve/reject within
+   * the undo window. The employee has almost certainly already been told the
+   * original outcome, so this email leads with what changed and why the earlier
+   * message no longer applies.
+   */
+  async sendDecisionReversedNotification(opts: {
+    employeeEmail: string;
+    employeeName: string;
+    optionName: string;
+    /** What was undone, from the employee's point of view. */
+    reversed: 'approval' | 'rejection';
+    /** Where the request sits now. */
+    stageLabel: string;
+    /** Tokens returned to the balance — 0 when the undone decision never deducted. */
+    tokensRefunded: number;
+    /** Role of the person who reversed it. */
+    actorRole: 'manager' | 'coach' | 'HR' | 'administrator';
+  }): Promise<void> {
+    const {
+      employeeEmail,
+      employeeName,
+      optionName,
+      reversed,
+      stageLabel,
+      tokensRefunded,
+      actorRole,
+    } = opts;
+
+    const headline =
+      reversed === 'approval'
+        ? `The earlier approval of your Development Token request has been withdrawn by your ${actorRole}, so the approval notice you received no longer applies.`
+        : `The earlier decision on your Development Token request has been withdrawn by your ${actorRole} — it was not rejected after all, and the rejection notice you received no longer applies.`;
+
+    const refundLine =
+      tokensRefunded > 0
+        ? `<p style="margin:0 0 20px;color:${BRAND.textDark};"><strong>${tokensRefunded} token${tokensRefunded !== 1 ? 's' : ''}</strong> ${tokensRefunded !== 1 ? 'have' : 'has'} been returned to your balance.</p>`
+        : '';
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${employeeName}</strong>,</p>
+      <p style="margin:0 0 20px;color:${BRAND.textDark};">${headline}</p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 20px;">
+        ${this.detailRow('Development Option:', optionName)}
+        ${this.detailRow('Current Status:', `<span style="color:${BRAND.pending};font-weight:600;">${stageLabel}</span>`)}
+        ${tokensRefunded > 0 ? this.detailRow('Tokens Returned:', `${tokensRefunded} token${tokensRefunded !== 1 ? 's' : ''}`) : ''}
+      </table>
+
+      ${refundLine}
+      <p style="margin:0 0 20px;color:${BRAND.textDark};">Your request is back in the approval queue and will be reviewed again. No action is needed from you. If you have questions about why this changed, please reach out to your ${actorRole}.</p>
+
+      ${this.button('View My Request', `${this.frontendUrl}/my-request`)}
+    `;
+
+    await this.sendEmail({
+      to: employeeEmail,
+      subject: `Correction: Your Development Token Request Is Back Under Review`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${employeeName},\n\n${headline.replace(/<[^>]+>/g, '')}\n\nDevelopment Option: ${optionName}\nCurrent Status: ${stageLabel}${tokensRefunded > 0 ? `\nTokens Returned: ${tokensRefunded}` : ''}\n\nYour request is back in the approval queue and will be reviewed again. No action is needed from you. If you have questions about why this changed, please reach out to your ${actorRole}.\n\nBest regards,\nGreat Deals Academy`,
     });
   }
 

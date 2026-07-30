@@ -171,6 +171,8 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
           'Exchange 1 token for 1 OTJ or Special Project (1–3 months).',
         tokenCost: 1,
         isActive: true,
+        // Manager approval is final — only Learning Subsidy escalates to HR.
+        requiresHrApproval: false,
         rules: {
           consecutiveYearRepeatAllowed: false,
           features: [
@@ -186,6 +188,8 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
           'Exchange 2 tokens for a coaching cycle of 3 sessions with the same coach.',
         tokenCost: 2,
         isActive: true,
+        // Coach approval is final — only Learning Subsidy escalates to HR.
+        requiresHrApproval: false,
         rules: {
           sessionsRequired: 3,
           sameCoachRequired: true,
@@ -199,6 +203,8 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
           '1 token = ₱1,000 subsidy for learning and development. Maximum of ₱3,000 (3 tokens).',
         tokenCost: 3,
         isActive: true,
+        // The one option that requires HR sign-off after the manager approves.
+        requiresHrApproval: true,
         rules: {
           subsidyPerToken: 1000,
           maxSubsidyAmount: 3000,
@@ -216,6 +222,9 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
       if (exists) {
         // Merge seed rules into existing record so new fields (e.g. features) are added
         // without overwriting admin-customized values like tokenCost or isActive.
+        // requiresHrApproval is deliberately in that same "don't overwrite" set —
+        // Migration1785700000000 sets the correct baseline once, and admins own it
+        // from then on.
         const mergedRules = {
           ...(data.rules as object),
           ...(exists.rules as object),
