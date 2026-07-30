@@ -862,6 +862,195 @@ export class EmailService {
     });
   }
 
+  /**
+   * [TO EMPLOYEE] Sent when the coach proposes a (new) time for a session —
+   * the employee must accept, reject, or ask for another date.
+   */
+  async sendSessionTimeProposedNotification(opts: {
+    employeeEmail: string;
+    employeeName: string;
+    coachName: string;
+    sessionNumber: number;
+    currentScheduledAt: Date;
+    proposedAt: Date;
+    note?: string | null;
+    requestId: string;
+  }): Promise<void> {
+    const { employeeEmail, employeeName, coachName, sessionNumber, currentScheduledAt, proposedAt, note, requestId } = opts;
+    const currentStr = this.formatDateTime(currentScheduledAt);
+    const proposedStr = this.formatDateTime(proposedAt);
+    const noteRow = note
+      ? `<div style="background:${BRAND.body};border-left:4px solid ${BRAND.pending};padding:12px 16px;margin:0 0 20px;border-radius:0 4px 4px 0;color:${BRAND.textDark};">${note}</div>`
+      : '';
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${employeeName}</strong>,</p>
+      <p style="margin:0 0 20px;"><strong>${coachName}</strong> has proposed a <strong>new time</strong> for your coaching session. Please accept it, reject it, or ask for a different date.</p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 24px;">
+        ${this.detailRow('Coach:', coachName)}
+        ${this.detailRow('Session:', `Session ${sessionNumber} of 3`)}
+        ${this.detailRow('Current Time:', currentStr)}
+        ${this.detailRow('Proposed Time:', `<span style="color:${BRAND.primary};font-weight:700;">${proposedStr}</span>`)}
+      </table>
+      ${noteRow}
+
+      <p style="margin:0 0 20px;color:${BRAND.textMuted};font-size:14px;">Nothing changes until you respond — the session keeps its current time for now.</p>
+      ${this.button('Review Proposal', `${this.frontendUrl}/coaching/${requestId}/sessions`, BRAND.pending)}
+    `;
+
+    await this.sendEmail({
+      to: employeeEmail,
+      subject: `New Time Proposed — Session ${sessionNumber} (Action Needed)`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${employeeName},\n\n${coachName} proposed a new time for Session ${sessionNumber} of 3.\n\nCurrent Time: ${currentStr}\nProposed Time: ${proposedStr}${note ? `\n\nNote from your coach: ${note}` : ''}\n\nPlease log in to accept, reject, or ask for a different date.\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /**
+   * [TO COACH] Sent when the employee accepts the proposed time.
+   */
+  async sendProposalAcceptedNotification(opts: {
+    coachEmail: string;
+    coachName: string;
+    employeeName: string;
+    sessionNumber: number;
+    scheduledAt: Date;
+  }): Promise<void> {
+    const { coachEmail, coachName, employeeName, sessionNumber, scheduledAt } = opts;
+    const dateStr = this.formatDateTime(scheduledAt);
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${coachName}</strong>,</p>
+      <p style="margin:0 0 20px;"><strong>${employeeName}</strong> accepted your proposed time. The session is now <strong style="color:${BRAND.success};">scheduled</strong>.</p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" style="border-top:1px solid ${BRAND.border};margin:0 0 24px;">
+        ${this.detailRow('Employee:', employeeName)}
+        ${this.detailRow('Session:', `Session ${sessionNumber} of 3`)}
+        ${this.detailRow('New Date & Time:', dateStr)}
+        ${this.detailRow('Status:', `<span style="color:${BRAND.success};font-weight:600;">Scheduled</span>`)}
+      </table>
+
+      ${this.button('Go to My Sessions', `${this.frontendUrl}/coach/sessions`, BRAND.success)}
+    `;
+
+    await this.sendEmail({
+      to: coachEmail,
+      subject: `Proposed Time Accepted — Session ${sessionNumber}`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${coachName},\n\n${employeeName} accepted your proposed time for Session ${sessionNumber} of 3.\n\nNew Date & Time: ${dateStr}\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /**
+   * [TO COACH] Sent when the employee rejects the proposed time. The copy
+   * depends on what the rejection resolved to:
+   * - declined  — the underlying booking request was declined
+   * - reverted  — the session stays scheduled at its original time
+   * - cancelled — the pending cancellation went through
+   */
+  async sendProposalRejectedNotification(opts: {
+    coachEmail: string;
+    coachName: string;
+    employeeName: string;
+    sessionNumber: number;
+    outcome: 'declined' | 'reverted' | 'cancelled';
+    reason?: string | null;
+    requestId: string;
+  }): Promise<void> {
+    const { coachEmail, coachName, employeeName, sessionNumber, outcome, reason } = opts;
+    const outcomeCopy =
+      outcome === 'declined'
+        ? `The booking request has been <strong style="color:${BRAND.danger};">declined</strong> — the employee can pick a different slot.`
+        : outcome === 'cancelled'
+          ? `The pending cancellation went through — the session is now <strong style="color:${BRAND.danger};">cancelled</strong>.`
+          : `The session stays <strong style="color:${BRAND.success};">scheduled</strong> at its original time.`;
+    const outcomeText =
+      outcome === 'declined'
+        ? 'The booking request has been declined — the employee can pick a different slot.'
+        : outcome === 'cancelled'
+          ? 'The pending cancellation went through — the session is now cancelled.'
+          : 'The session stays scheduled at its original time.';
+    const reasonRow = reason
+      ? `<div style="background:${BRAND.body};border-left:4px solid ${BRAND.danger};padding:12px 16px;margin:0 0 20px;border-radius:0 4px 4px 0;color:${BRAND.textDark};">${reason}</div>`
+      : '';
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${coachName}</strong>,</p>
+      <p style="margin:0 0 20px;"><strong>${employeeName}</strong> rejected your proposed time for Session ${sessionNumber}. ${outcomeCopy}</p>
+      ${reasonRow}
+
+      ${this.button('Go to My Sessions', `${this.frontendUrl}/coach/sessions`, BRAND.primary)}
+    `;
+
+    await this.sendEmail({
+      to: coachEmail,
+      subject: `Proposed Time Rejected — Session ${sessionNumber}`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${coachName},\n\n${employeeName} rejected your proposed time for Session ${sessionNumber} of 3. ${outcomeText}${reason ? `\n\nReason: ${reason}` : ''}\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /**
+   * [TO COACH] Sent when the employee asks for a different time instead of
+   * accepting or rejecting the proposal.
+   */
+  async sendNewTimeRequestedNotification(opts: {
+    coachEmail: string;
+    coachName: string;
+    employeeName: string;
+    sessionNumber: number;
+    note?: string | null;
+  }): Promise<void> {
+    const { coachEmail, coachName, employeeName, sessionNumber, note } = opts;
+    const noteRow = note
+      ? `<div style="background:${BRAND.body};border-left:4px solid ${BRAND.pending};padding:12px 16px;margin:0 0 20px;border-radius:0 4px 4px 0;color:${BRAND.textDark};">${note}</div>`
+      : '';
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${coachName}</strong>,</p>
+      <p style="margin:0 0 20px;"><strong>${employeeName}</strong> can't make the time you proposed for Session ${sessionNumber} and is asking for a <strong>different date</strong>. Please propose a new time (or withdraw the proposal).</p>
+      ${noteRow}
+
+      ${this.button('Propose a New Time', `${this.frontendUrl}/coach/sessions`, BRAND.pending)}
+    `;
+
+    await this.sendEmail({
+      to: coachEmail,
+      subject: `Different Time Requested — Session ${sessionNumber} (Action Needed)`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${coachName},\n\n${employeeName} asked for a different time for Session ${sessionNumber} of 3.${note ? `\n\nNote: ${note}` : ''}\n\nPlease log in to propose a new time.\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
+  /**
+   * [TO EMPLOYEE] Sent when the coach withdraws their proposed time — the
+   * session reverts to whatever it was before the proposal.
+   */
+  async sendProposalWithdrawnNotification(opts: {
+    employeeEmail: string;
+    employeeName: string;
+    coachName: string;
+    sessionNumber: number;
+    requestId: string;
+  }): Promise<void> {
+    const { employeeEmail, employeeName, coachName, sessionNumber, requestId } = opts;
+
+    const content = `
+      <p style="margin:0 0 8px;">Hi <strong>${employeeName}</strong>,</p>
+      <p style="margin:0 0 20px;"><strong>${coachName}</strong> withdrew their proposed time for Session ${sessionNumber}. The session is back to how it was before the proposal — no action is needed from you right now.</p>
+
+      ${this.button('View My Sessions', `${this.frontendUrl}/coaching/${requestId}/sessions`, BRAND.primary)}
+    `;
+
+    await this.sendEmail({
+      to: employeeEmail,
+      subject: `Proposed Time Withdrawn — Session ${sessionNumber}`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${employeeName},\n\n${coachName} withdrew their proposed time for Session ${sessionNumber} of 3. The session is back to how it was before the proposal.\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
   /** Formats a Date as "February 20, 2026 · 9:00 AM". */
   private formatDateTime(d: Date): string {
     return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })

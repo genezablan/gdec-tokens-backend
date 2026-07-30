@@ -20,6 +20,9 @@ import { RejectTokenRequestDto } from './dto/reject-token-request.dto';
 import { ResubmitTokenRequestDto } from './dto/resubmit-token-request.dto';
 import { BookSessionDto } from './dto/book-session.dto';
 import { RequestCancelSessionDto } from './dto/request-cancel-session.dto';
+import { ProposeSessionTimeDto } from './dto/propose-session-time.dto';
+import { RejectProposalDto } from './dto/reject-proposal.dto';
+import { RequestNewTimeDto } from './dto/request-new-time.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { User } from '../entities/user.entity';
@@ -447,5 +450,83 @@ export class TokenRequestsController {
     @CurrentUser() user: User,
   ) {
     return this.coachingSessionsService.declineCancelSession(id, sessionId, user.id);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/propose-time
+   * Coach counter-proposes a (new) time — from a pending booking, a scheduled
+   * session, a pending cancellation, or to overwrite their own pending proposal.
+   * Body: { availabilityId? } or { availableDate?, startTime?, endTime? }, plus { note? }
+   */
+  @Patch(':id/sessions/:sessionId/propose-time')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  proposeSessionTime(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+    @Body() dto: ProposeSessionTimeDto,
+  ) {
+    return this.coachingSessionsService.proposeSessionTime(id, sessionId, user.id, dto);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/accept-proposal
+   * Employee accepts the coach's proposed time — session moves to it and
+   * becomes scheduled.
+   */
+  @Patch(':id/sessions/:sessionId/accept-proposal')
+  acceptProposal(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.coachingSessionsService.acceptProposedTime(id, sessionId, user.id);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/reject-proposal
+   * Employee rejects the proposed time. Outcome depends on where the proposal
+   * came from: pending booking → declined; scheduled → stays at the original
+   * time; pending cancellation → cancelled.
+   * Body: { reason?: string }
+   */
+  @Patch(':id/sessions/:sessionId/reject-proposal')
+  rejectProposal(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+    @Body() dto: RejectProposalDto,
+  ) {
+    return this.coachingSessionsService.rejectProposedTime(id, sessionId, user.id, dto);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/request-new-time
+   * Employee asks the coach for a different time instead of accepting/rejecting.
+   * Body: { note?: string }
+   */
+  @Patch(':id/sessions/:sessionId/request-new-time')
+  requestNewTime(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+    @Body() dto: RequestNewTimeDto,
+  ) {
+    return this.coachingSessionsService.requestAnotherTime(id, sessionId, user.id, dto);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/withdraw-proposal
+   * Coach withdraws their pending proposal — the session reverts to its prior
+   * status (pending booking / scheduled / pending cancellation).
+   */
+  @Patch(':id/sessions/:sessionId/withdraw-proposal')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  withdrawProposal(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.coachingSessionsService.withdrawProposedTime(id, sessionId, user.id);
   }
 }

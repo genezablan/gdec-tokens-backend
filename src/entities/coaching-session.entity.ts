@@ -100,6 +100,40 @@ export class CoachingSession {
   @Column({ type: 'enum', enum: CoachingSessionStatus, nullable: true })
   statusBeforeCancellation: CoachingSessionStatus | null;
 
+  // ─── Coach counter-proposal ─────────────────────────────────────────────────
+  // Set while status = PENDING_EMPLOYEE_APPROVAL: the coach proposed a (new)
+  // time and the employee must approve, reject, or ask for another date.
+  // scheduledAt/availabilityId keep the ORIGINAL time until the proposal is
+  // accepted, so the current slot stays protected by the unique index.
+
+  /** Proposed session date, "YYYY-MM-DD". */
+  @Column({ type: 'date', nullable: true })
+  proposedDate: string | null;
+
+  /** Proposed start time, "HH:MM:SS". */
+  @Column({ type: 'time', nullable: true })
+  proposedStartTime: string | null;
+
+  /** Proposed end time, "HH:MM:SS". */
+  @Column({ type: 'time', nullable: true })
+  proposedEndTime: string | null;
+
+  /** Optional note from the coach explaining the proposal. */
+  @Column({ type: 'text', nullable: true })
+  proposalNote: string | null;
+
+  /** Optional note from the employee when asking for a different date. */
+  @Column({ type: 'text', nullable: true })
+  employeeProposalNote: string | null;
+
+  /** When the employee sent the proposal back asking for another date. */
+  @Column({ type: 'timestamptz', nullable: true })
+  proposalReturnedAt: Date | null;
+
+  /** Status to restore to if the proposal is withdrawn (or branch on at reject). */
+  @Column({ type: 'enum', enum: CoachingSessionStatus, nullable: true })
+  statusBeforeProposal: CoachingSessionStatus | null;
+
   // ─── Calendar sync (Outlook / Microsoft Graph) ─────────────────────────────────
 
   /** Microsoft Graph event id, set when the session is pushed to the coach's calendar. */

@@ -18,6 +18,9 @@ import {
 } from '../common/enums';
 import { BookSessionDto } from './dto/book-session.dto';
 import { RequestCancelSessionDto } from './dto/request-cancel-session.dto';
+import { ProposeSessionTimeDto } from './dto/propose-session-time.dto';
+import { RejectProposalDto } from './dto/reject-proposal.dto';
+import { RequestNewTimeDto } from './dto/request-new-time.dto';
 import { EmailService } from '../common/services/email.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../entities/notification.entity';
@@ -1046,6 +1049,567 @@ export class CoachingSessionsService {
           })
           .catch(() => {});
       }
+    }
+
+    return saved;
+  }
+
+  // ─── Coach counter-proposal ───────────────────────────────────────────────────
+
+  /** Statuses a coach may counter-propose a (new) time from. */
+  private static readonly PROPOSABLE_STATUSES = [
+    CoachingSessionStatus.PENDING_COACH_APPROVAL, // instead of confirm/decline
+    CoachingSessionStatus.SCHEDULED, // reschedule instead of cancelling
+    CoachingSessionStatus.PENDING_CANCELLATION, // instead of approving the cancel
+    CoachingSessionStatus.PENDING_EMPLOYEE_APPROVAL, // re-propose (negotiation loop)
+  ];
+
+  /** Null out every proposal field. Does NOT touch the cancellation fields. */
+  private clearProposalFields(session: CoachingSession): void {
+    session.proposedDate = null;
+    session.proposedStartTime = null;
+    session.proposedEndTime = null;
+    session.proposalNote = null;
+    session.employeeProposalNote = null;
+    session.proposalReturnedAt = null;
+    session.statusBeforeProposal = null;
+  }
+
+  /**
+   * Coach proposes a (new) time for a session. The session keeps its ORIGINAL
+   * scheduledAt/availabilityId (and any in-flight cancellation fields) until
+   * the employee accepts — the proposal itself holds nothing.
+   * Also valid while already PENDING_EMPLOYEE_APPROVAL: re-proposing overwrites
+   * the previous proposal (the "employee asked for another date" loop).
+   */
+  async proposeSessionTime(
+    requestId: string,
+    sessionId: string,
+    coachId: string,
+    dto: ProposeSessionTimeDto,
+  ): Promise<CoachingSession> {
+    const session = await this.sessionRepo.findOne({
+      where: { id: sessionId, tokenRequestId: requestId },
+    });
+    if (!session) throw new NotFoundException('Session not found');
+    if (session.coachId !== coachId) {
+      throw new ForbiddenException(
+        'Only the assigned coach can propose a new time for this session',
+      );
+    }
+    if (
+      !CoachingSessionsService.PROPOSABLE_STATUSES.includes(session.status)
+    ) {
+      throw new BadRequestException(
+        `Cannot propose a new time — session is ${session.status}`,
+      );
+    }
+
+    // Resolve the proposed time: an existing manual slot or an Outlook-derived
+    // trio. Either way it's only a time pick here — no slot is held until the
+    // employee accepts (accept creates its own backing availability row).
+    let proposedDate: string;
+    let proposedStartTime: string;
+    let proposedEndTime: string;
+    if (dto.availabilityId) {
+      const slot = await this.availabilityRepo.findOne({
+        where: { id: dto.availabilityId },
+      });
+      if (!slot) throw new NotFoundException('Availability slot not found');
+      if (slot.coachId !== coachId) {
+        throw new BadRequestException(
+          'The selected slot does not belong to you',
+        );
+      }
+      if (slot.isBooked)
+        throw new BadRequestException('This slot has already been booked');
+      if (!slot.isActive)
+        throw new BadRequestException('This slot is no longer available');
+      proposedDate = slot.availableDate;
+      proposedStartTime = slot.startTime;
+      proposedEndTime = slot.endTime;
+    } else if (dto.availableDate && dto.startTime && dto.endTime) {
+      proposedDate = dto.availableDate;
+      proposedStartTime = dto.startTime;
+      proposedEndTime = dto.endTime;
+    } else {
+      throw new BadRequestException(
+        'Provide an availabilityId or a time slot (availableDate, startTime, endTime)',
+      );
+    }
+
+    const proposedStart = new Date(`${proposedDate}T${proposedStartTime}`);
+    if (proposedStart < new Date()) {
+      throw new BadRequestException('Cannot propose a time in the past');
+    }
+    if (proposedStart.getTime() === session.scheduledAt.getTime()) {
+      throw new BadRequestException(
+        'The proposed time is the same as the current session time',
+      );
+    }
+
+    // Advisory checks (authoritative re-check happens at accept): the coach's
+    // Outlook plus both parties' existing sessions.
+    await this.assertNoOutlookConflict(
+      coachId,
+      proposedDate,
+      proposedStartTime,
+      proposedEndTime,
+    );
+    const proposedEnd = new Date(`${proposedDate}T${proposedEndTime}`);
+    const proposeBlockers = {
+      excludeStatuses: RELEASED_STATUSES,
+      excludeSessionId: session.id,
+    };
+    const clash =
+      (await this.findOverlappingSession(
+        { coachId },
+        proposedStart,
+        proposedEnd,
+        proposeBlockers,
+      )) ??
+      (await this.findOverlappingSession(
+        { employeeId: session.employeeId },
+        proposedStart,
+        proposedEnd,
+        proposeBlockers,
+      ));
+    if (clash) {
+      throw new BadRequestException(
+        'This time overlaps another coaching session. Please choose a different one.',
+      );
+    }
+
+    // First proposal records where to revert to; a re-propose keeps it.
+    if (session.status !== CoachingSessionStatus.PENDING_EMPLOYEE_APPROVAL) {
+      session.statusBeforeProposal = session.status;
+      session.status = CoachingSessionStatus.PENDING_EMPLOYEE_APPROVAL;
+    }
+    session.proposedDate = proposedDate;
+    session.proposedStartTime = proposedStartTime;
+    session.proposedEndTime = proposedEndTime;
+    session.proposalNote = dto.note?.trim() || null;
+    session.proposalReturnedAt = null;
+    session.employeeProposalNote = null;
+    const saved = await this.sessionRepo.save(session);
+
+    const [employee, coach] = await Promise.all([
+      this.userRepo.findOne({ where: { id: session.employeeId } }),
+      this.userRepo.findOne({ where: { id: coachId } }),
+    ]);
+    if (employee && coach) {
+      this.emailService
+        .sendSessionTimeProposedNotification({
+          employeeEmail: employee.email,
+          employeeName: employee.fullName,
+          coachName: coach.fullName,
+          sessionNumber: session.sessionNumber,
+          currentScheduledAt: session.scheduledAt,
+          proposedAt: proposedStart,
+          note: saved.proposalNote,
+          requestId,
+        })
+        .catch(() => {});
+
+      this.notificationsService
+        .create(session.employeeId, {
+          title: 'New Session Time Proposed',
+          message: `${coach.fullName} proposed a new time for Session ${session.sessionNumber}. Please review and respond.`,
+          type: NotificationType.INFO,
+          requestId,
+          metadata: { deeplink: `/coaching/${requestId}/sessions` },
+        })
+        .catch(() => {});
+    }
+
+    return saved;
+  }
+
+  /**
+   * Employee accepts the coach's proposed time — the session moves to the new
+   * time and becomes SCHEDULED. The old slot is released, a backing slot row
+   * is created for the new time, and the calendar event is recreated.
+   * Any in-flight cancellation request is resolved by the agreement.
+   */
+  async acceptProposedTime(
+    requestId: string,
+    sessionId: string,
+    callerId: string,
+  ): Promise<CoachingSession> {
+    const session = await this.sessionRepo.findOne({
+      where: { id: sessionId, tokenRequestId: requestId },
+    });
+    if (!session) throw new NotFoundException('Session not found');
+    if (session.status !== CoachingSessionStatus.PENDING_EMPLOYEE_APPROVAL) {
+      throw new BadRequestException('This session has no pending time proposal');
+    }
+    if (callerId !== session.employeeId) {
+      throw new ForbiddenException(
+        'Only the employee can respond to a proposed session time',
+      );
+    }
+    if (
+      !session.proposedDate ||
+      !session.proposedStartTime ||
+      !session.proposedEndTime
+    ) {
+      throw new BadRequestException('This session has no pending time proposal');
+    }
+
+    const newStart = new Date(
+      `${session.proposedDate}T${session.proposedStartTime}`,
+    );
+    if (newStart < new Date()) {
+      throw new BadRequestException(
+        'The proposed time has already passed — please ask your coach for a new one.',
+      );
+    }
+    let newEnd = new Date(`${session.proposedDate}T${session.proposedEndTime}`);
+    if (Number.isNaN(newEnd.getTime()) || newEnd <= newStart) {
+      newEnd = new Date(newStart.getTime() + DEFAULT_SESSION_MINUTES * 60_000);
+    }
+
+    // Authoritative re-checks before locking the new time in (mirrors confirm:
+    // pending bookings don't block, sessions that hold their time do).
+    await this.assertNoOutlookConflict(
+      session.coachId,
+      session.proposedDate,
+      session.proposedStartTime,
+      session.proposedEndTime,
+    );
+    const acceptBlockers = {
+      excludeStatuses: [
+        ...RELEASED_STATUSES,
+        CoachingSessionStatus.PENDING_COACH_APPROVAL,
+      ],
+      excludeSessionId: session.id,
+    };
+    const clash =
+      (await this.findOverlappingSession(
+        { coachId: session.coachId },
+        newStart,
+        newEnd,
+        acceptBlockers,
+      )) ??
+      (await this.findOverlappingSession(
+        { employeeId: session.employeeId },
+        newStart,
+        newEnd,
+        acceptBlockers,
+      ));
+    if (clash) {
+      throw new BadRequestException(
+        'This time now overlaps another session. Please ask your coach for a new one.',
+      );
+    }
+
+    // Create the backing slot row for the new time first, so a failure leaves
+    // the session untouched at its original time.
+    const newSlot = await this.availabilityRepo.save(
+      this.availabilityRepo.create({
+        coachId: session.coachId,
+        availableDate: session.proposedDate,
+        startTime: session.proposedStartTime,
+        endTime: session.proposedEndTime,
+        isBooked: true,
+        isActive: true,
+      }),
+    );
+
+    const oldAvailabilityId = session.availabilityId;
+    const hadCalendarEvent = !!session.graphEventId;
+
+    session.scheduledAt = newStart;
+    session.availabilityId = newSlot.id;
+    session.status = CoachingSessionStatus.SCHEDULED;
+    this.clearProposalFields(session);
+    // Agreeing on a new time settles any in-flight cancellation request.
+    session.cancelRequestedById = null;
+    session.cancelReason = null;
+    session.statusBeforeCancellation = null;
+
+    let saved: CoachingSession;
+    try {
+      saved = await this.sessionRepo.save(session);
+    } catch (err) {
+      // A concurrent booking won the race for this exact coach/time —
+      // enforced by the partial unique index on (coachId, scheduledAt).
+      if (
+        err instanceof QueryFailedError &&
+        (err as unknown as { code?: string }).code === '23505'
+      ) {
+        await this.availabilityRepo.delete(newSlot.id).catch(() => {});
+        throw new BadRequestException(
+          'This time is no longer available. Please ask your coach for a new one.',
+        );
+      }
+      throw err;
+    }
+
+    // Only after the session is safely on its new time, release the old slot.
+    if (oldAvailabilityId) {
+      await this.availabilityRepo.update(oldAvailabilityId, {
+        isBooked: false,
+      });
+    }
+
+    const [coach, employee] = await Promise.all([
+      this.userRepo.findOne({ where: { id: session.coachId } }),
+      this.userRepo.findOne({ where: { id: session.employeeId } }),
+    ]);
+
+    // Recreate the calendar event at the new time (Graph has no update API
+    // here — cancel + create). Best-effort, like every other calendar touch.
+    if (hadCalendarEvent) {
+      await this.removeSessionFromCalendar(saved);
+      saved.graphEventId = null;
+      saved.teamsJoinUrl = null;
+      saved.calendarSyncStatus = null;
+      saved = await this.sessionRepo.save(saved);
+    }
+    await this.syncSessionToCalendar(saved, coach, employee);
+
+    if (coach && employee) {
+      this.emailService
+        .sendProposalAcceptedNotification({
+          coachEmail: coach.email,
+          coachName: coach.fullName,
+          employeeName: employee.fullName,
+          sessionNumber: saved.sessionNumber,
+          scheduledAt: saved.scheduledAt,
+        })
+        .catch(() => {});
+
+      this.notificationsService
+        .create(saved.coachId, {
+          title: 'Proposed Session Time Accepted',
+          message: `${employee.fullName} accepted your proposed time for Session ${saved.sessionNumber}. The session is now scheduled.`,
+          type: NotificationType.SUCCESS,
+          requestId,
+          metadata: { deeplink: '/coach/sessions' },
+        })
+        .catch(() => {});
+    }
+
+    return saved;
+  }
+
+  /**
+   * Employee rejects the coach's proposed time. The outcome depends on where
+   * the proposal came from (statusBeforeProposal):
+   * - pending_coach_approval → DECLINED (slot released, employee can re-book)
+   * - scheduled → back to SCHEDULED at the original, untouched time
+   * - pending_cancellation → CANCELLED (the cancellation proceeds, full cleanup)
+   */
+  async rejectProposedTime(
+    requestId: string,
+    sessionId: string,
+    callerId: string,
+    dto: RejectProposalDto,
+  ): Promise<CoachingSession> {
+    const session = await this.sessionRepo.findOne({
+      where: { id: sessionId, tokenRequestId: requestId },
+    });
+    if (!session) throw new NotFoundException('Session not found');
+    if (session.status !== CoachingSessionStatus.PENDING_EMPLOYEE_APPROVAL) {
+      throw new BadRequestException('This session has no pending time proposal');
+    }
+    if (callerId !== session.employeeId) {
+      throw new ForbiddenException(
+        'Only the employee can respond to a proposed session time',
+      );
+    }
+
+    const origin =
+      session.statusBeforeProposal ?? CoachingSessionStatus.SCHEDULED;
+    let outcome: 'declined' | 'reverted' | 'cancelled';
+
+    if (origin === CoachingSessionStatus.PENDING_COACH_APPROVAL) {
+      // The underlying booking request dies with the proposal.
+      session.status = CoachingSessionStatus.DECLINED;
+      if (session.availabilityId) {
+        await this.availabilityRepo.update(session.availabilityId, {
+          isBooked: false,
+        });
+      }
+      outcome = 'declined';
+    } else if (origin === CoachingSessionStatus.PENDING_CANCELLATION) {
+      // The cancellation the proposal tried to avert now proceeds.
+      session.status = CoachingSessionStatus.CANCELLED;
+      await this.removeSessionFromCalendar(session);
+      session.graphEventId = null;
+      session.teamsJoinUrl = null;
+      session.calendarSyncStatus = null;
+      if (session.availabilityId) {
+        await this.availabilityRepo.update(session.availabilityId, {
+          isBooked: false,
+        });
+      }
+      session.cancelRequestedById = null;
+      session.cancelReason = null;
+      session.statusBeforeCancellation = null;
+      outcome = 'cancelled';
+    } else {
+      // Confirmed session stays exactly as it was.
+      session.status = CoachingSessionStatus.SCHEDULED;
+      outcome = 'reverted';
+    }
+
+    this.clearProposalFields(session);
+    const saved = await this.sessionRepo.save(session);
+
+    const [coach, employee] = await Promise.all([
+      this.userRepo.findOne({ where: { id: session.coachId } }),
+      this.userRepo.findOne({ where: { id: session.employeeId } }),
+    ]);
+    if (coach && employee) {
+      const reason = dto.reason?.trim() || null;
+      this.emailService
+        .sendProposalRejectedNotification({
+          coachEmail: coach.email,
+          coachName: coach.fullName,
+          employeeName: employee.fullName,
+          sessionNumber: saved.sessionNumber,
+          outcome,
+          reason,
+          requestId,
+        })
+        .catch(() => {});
+
+      const outcomeCopy =
+        outcome === 'declined'
+          ? 'The booking request has been declined.'
+          : outcome === 'cancelled'
+            ? 'The session has been cancelled.'
+            : 'The session stays at its original time.';
+      this.notificationsService
+        .create(saved.coachId, {
+          title: 'Proposed Session Time Rejected',
+          message: `${employee.fullName} rejected your proposed time for Session ${saved.sessionNumber}. ${outcomeCopy}`,
+          type: NotificationType.WARNING,
+          requestId,
+          metadata: { deeplink: '/coach/sessions' },
+        })
+        .catch(() => {});
+    }
+
+    return saved;
+  }
+
+  /**
+   * Employee sends the proposal back, asking the coach for a different time.
+   * The session stays PENDING_EMPLOYEE_APPROVAL — proposalReturnedAt flips
+   * whose turn it is, and the coach re-proposes (or withdraws).
+   */
+  async requestAnotherTime(
+    requestId: string,
+    sessionId: string,
+    callerId: string,
+    dto: RequestNewTimeDto,
+  ): Promise<CoachingSession> {
+    const session = await this.sessionRepo.findOne({
+      where: { id: sessionId, tokenRequestId: requestId },
+    });
+    if (!session) throw new NotFoundException('Session not found');
+    if (session.status !== CoachingSessionStatus.PENDING_EMPLOYEE_APPROVAL) {
+      throw new BadRequestException('This session has no pending time proposal');
+    }
+    if (callerId !== session.employeeId) {
+      throw new ForbiddenException(
+        'Only the employee can respond to a proposed session time',
+      );
+    }
+    if (session.proposalReturnedAt) {
+      throw new BadRequestException(
+        'You already asked for a different time — waiting for the coach to propose one.',
+      );
+    }
+
+    session.proposalReturnedAt = new Date();
+    session.employeeProposalNote = dto.note?.trim() || null;
+    const saved = await this.sessionRepo.save(session);
+
+    const [coach, employee] = await Promise.all([
+      this.userRepo.findOne({ where: { id: session.coachId } }),
+      this.userRepo.findOne({ where: { id: session.employeeId } }),
+    ]);
+    if (coach && employee) {
+      this.emailService
+        .sendNewTimeRequestedNotification({
+          coachEmail: coach.email,
+          coachName: coach.fullName,
+          employeeName: employee.fullName,
+          sessionNumber: saved.sessionNumber,
+          note: saved.employeeProposalNote,
+        })
+        .catch(() => {});
+
+      this.notificationsService
+        .create(saved.coachId, {
+          title: 'Different Session Time Requested',
+          message: `${employee.fullName} asked for a different time for Session ${saved.sessionNumber}. Please propose a new one.`,
+          type: NotificationType.INFO,
+          requestId,
+          metadata: { deeplink: '/coach/sessions' },
+        })
+        .catch(() => {});
+    }
+
+    return saved;
+  }
+
+  /**
+   * Coach withdraws their pending proposal — the session reverts to whatever
+   * it was before (pending booking, scheduled, or pending cancellation; any
+   * in-flight cancellation fields were left untouched, so that flow resumes).
+   */
+  async withdrawProposedTime(
+    requestId: string,
+    sessionId: string,
+    coachId: string,
+  ): Promise<CoachingSession> {
+    const session = await this.sessionRepo.findOne({
+      where: { id: sessionId, tokenRequestId: requestId },
+    });
+    if (!session) throw new NotFoundException('Session not found');
+    if (session.status !== CoachingSessionStatus.PENDING_EMPLOYEE_APPROVAL) {
+      throw new BadRequestException('This session has no pending time proposal');
+    }
+    if (session.coachId !== coachId) {
+      throw new ForbiddenException(
+        'Only the assigned coach can withdraw this proposal',
+      );
+    }
+
+    session.status =
+      session.statusBeforeProposal ?? CoachingSessionStatus.SCHEDULED;
+    this.clearProposalFields(session);
+    const saved = await this.sessionRepo.save(session);
+
+    const [coach, employee] = await Promise.all([
+      this.userRepo.findOne({ where: { id: coachId } }),
+      this.userRepo.findOne({ where: { id: session.employeeId } }),
+    ]);
+    if (coach && employee) {
+      this.emailService
+        .sendProposalWithdrawnNotification({
+          employeeEmail: employee.email,
+          employeeName: employee.fullName,
+          coachName: coach.fullName,
+          sessionNumber: saved.sessionNumber,
+          requestId,
+        })
+        .catch(() => {});
+
+      this.notificationsService
+        .create(saved.employeeId, {
+          title: 'Session Time Proposal Withdrawn',
+          message: `${coach.fullName} withdrew their proposed time for Session ${saved.sessionNumber}.`,
+          type: NotificationType.INFO,
+          requestId,
+          metadata: { deeplink: `/coaching/${requestId}/sessions` },
+        })
+        .catch(() => {});
     }
 
     return saved;
