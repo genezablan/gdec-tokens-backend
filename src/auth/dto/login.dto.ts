@@ -7,6 +7,16 @@ import {
   MinLength,
 } from 'class-validator';
 
+/**
+ * Minimum password length, enforced everywhere a password is set or supplied.
+ * Every path that can create a password already meets it — registration, reset,
+ * change-password, and the `TempPass123!` seed used by the import scripts — so
+ * no existing account is shut out by it.
+ *
+ * The frontend mirrors this in `src/constants/auth.js`; keep the two in sync.
+ */
+export const PASSWORD_MIN_LENGTH = 8;
+
 export class LoginDto {
   @IsOptional()
   @IsEmail()
@@ -18,19 +28,19 @@ export class LoginDto {
 
   @IsNotEmpty()
   @IsString()
-  @MinLength(6)
+  @MinLength(PASSWORD_MIN_LENGTH)
   password: string;
 }
 
 export class ChangePasswordDto {
   @IsString()
   @IsNotEmpty()
-  @MinLength(8)
+  @MinLength(PASSWORD_MIN_LENGTH)
   oldPassword: string;
 
   @IsString()
   @IsNotEmpty()
-  @MinLength(8)
+  @MinLength(PASSWORD_MIN_LENGTH)
   newPassword: string;
 }
 
@@ -51,7 +61,7 @@ export class ResetPasswordDto {
 
   @IsString()
   @IsNotEmpty()
-  @MinLength(8)
+  @MinLength(PASSWORD_MIN_LENGTH)
   newPassword: string;
 }
 
@@ -98,6 +108,6 @@ export class RegisterDto {
 
   @IsNotEmpty()
   @IsString()
-  @MinLength(8)
+  @MinLength(PASSWORD_MIN_LENGTH)
   password: string;
 }
