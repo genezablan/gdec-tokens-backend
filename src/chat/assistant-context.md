@@ -37,8 +37,8 @@ Every signed-in user is at least an **employee**. Users can hold multiple roles.
 |---|---|---|
 | `employee` | Everyone (default) | Dashboard, My Requests, New Request, Account Management, Roster of Coaches, FAQ |
 | `approver` | Manager / supervisor who approves requests | Approval queue |
-| `hr_approver` | HR | HR Registrations; finalizes approvals |
-| `coach` | Internal coach | My Availability, My Sessions |
+| `hr_approver` | HR | HR Registrations; Approval queue — gives the final approval on **Learning Subsidy** requests |
+| `coach` | Internal coach | My Availability, My Sessions. Coaching requests name them as the first-level approver |
 | `admin` | Full system access | Everything, incl. Development Options, Token Management, Tutorials, Analytics, Message Approval |
 
 **Rule for the assistant:** before giving navigation steps, check whether the page is
@@ -88,8 +88,10 @@ Format: **Sidebar label** — `route` — *roles that can access* — what it's 
 
 ### Approver / Admin
 
-- **Approval** — `/approval` — *approver, admin* — Queue of program requests awaiting
-  review; approve/reject with a details view. Has sub-items:
+- **Approval** — `/approval` — *approver, hr_approver, admin* — Queue of program requests
+  awaiting review; approve/reject with a details view. Approving asks for confirmation
+  first, stating whether it deducts tokens or sends the request on to HR. A decision can
+  be undone from the same row for 1 hour. Has sub-items:
   - **Program Request** *(sub-item)* — `/approval` — the main approval queue.
   - **Message Request** *(sub-item)* — `/message-approval` — *admin only* — review/approve
     message (kudos) posts.
@@ -131,8 +133,9 @@ Format: **Sidebar label** — `route` — *roles that can access* — what it's 
 | Use a Learning Subsidy | **New Request → Learning Subsidy** |
 | Offload a task / OTJ project | **New Request → Task Offloading** |
 | Check a request's status | **My Requests** (use the status tabs) |
-| Cancel a request | **My Requests** — open the request's options; only **Pending** requests can be cancelled |
+| Cancel a request | **My Requests** — open the request's ⋯ menu. Possible while it's **Pending**, and for Learning Subsidy also while it's **Awaiting HR**. Once approved, tokens are spent and it can't be cancelled |
 | Resubmit a rejected request | **My Requests** — open the rejected request, review remarks, resubmit |
+| Undo an approval/rejection they just made (approver) | **Approval** — the decided row shows **Undo** for 1 hour, replacing the approve/reject buttons |
 | See my token balance | **Dashboard** (summary) or ask the assistant; admins manage balances in **Token Management** |
 | Change my password / update profile | **Settings gear → Account Management** |
 | Set my coaching availability (coaches) | **My Availability** (`/coach-availability`) |
@@ -161,25 +164,60 @@ Format: **Sidebar label** — `route` — *roles that can access* — what it's 
 
 - Each employee gets a **base allocation** of tokens per cycle. Balance (available /
   used / **boost**) shows on the dashboard; admins manage it in Token Management.
-- **Tokens are deducted only on final (HR) approval** — not while a request is pending.
+- **Tokens are deducted at final approval** — never while a request is still under
+  review. *Which* approval is final depends on the option (see the approval chain
+  below), so don't tell users it's always HR.
 - **Boost tokens** are extra tokens an admin can grant on top of the base allocation.
 - Tokens **expire at the end of the cycle** — use them before the deadline.
 
+### Approval chain — differs by development option
+
+Every request is reviewed first by the employee's **manager**, except **Internal
+Coaching**, which goes to the **coach the employee nominated**.
+
+| Option | First-level approver | Then | Tokens deducted at |
+|---|---|---|---|
+| **Task Offloading** | Manager | — that decision is final | Manager approval |
+| **Internal Coaching** | Nominated coach | — that decision is final | Coach approval |
+| **Learning Subsidy** | Manager | **HR** gives final approval | HR approval |
+
+**Only Learning Subsidy escalates to HR.** For the other two, the manager's or coach's
+approval finalizes the request and spends the tokens immediately. This is driven by the
+`requiresHrApproval` flag an admin can change per option in **Development Options**, and
+it is read at approval time — so if a user's experience contradicts the table, the flag
+may have been changed.
+
 ### Request lifecycle & statuses
 
-Flow: `pending → manager_approved → approved (tokens deducted) → completed`, plus
-`rejected` and `cancelled`.
+Learning Subsidy: `pending → manager_approved → approved (tokens deducted)`.
+Task Offloading / Internal Coaching: `pending → approved (tokens deducted)` — there is
+no `manager_approved` stage. Plus `rejected` and `cancelled` from either flow.
 
 | Status | Meaning |
 |---|---|
-| **Pending** | Submitted and under review. Awaiting approval — no tokens deducted yet. (Includes "manager approved / awaiting HR".) |
-| **Approved** | All required approvals complete; tokens have been deducted; ready for / in progress of execution. |
-| **Completed** | The development activity is finished and validated (completion documents submitted, HR verified). Request is closed. |
-| **Rejected** | Not approved. No tokens deducted — review remarks; may revise and resubmit. |
-| **Cancelled** | Withdrawn by the requester before completion. No tokens deducted. |
+| **Pending** | Submitted, awaiting the first-level decision. No tokens deducted. |
+| **Awaiting HR** (`manager_approved`) | Learning Subsidy only — the manager approved and HR still has to finalize. No tokens deducted yet. |
+| **Approved** | All required approvals complete; tokens have been deducted. |
+| **Rejected** | Not approved. No tokens deducted — review remarks, then revise and resubmit. |
+| **Cancelled** | Withdrawn by the requester. No tokens deducted. |
 
-**Approval chain:** a request is reviewed by the employee's **manager (approver)** first,
-then finalized by **HR**. Tokens are deducted on HR approval.
+> The **Completed** tab in My Requests currently lists *approved* requests; there is no
+> separate completed state in the system yet. Don't promise users a completion step.
+
+### Undoing an approval or rejection
+
+An approver can reverse their **own** decision for up to **1 hour** after making it
+(admins can reverse anyone's). Reversing puts the request back to the stage it was at
+before and **returns any tokens that were deducted**.
+
+The hour is a ceiling, not a promise — the undo also expires the moment anything acts on
+the decision: HR approves a Learning Subsidy, the employee resubmits or cancels, or a
+coaching session gets booked against an approved coaching request.
+
+If an employee asks why their request went back to "Pending", or why they got an
+**"Approval Withdrawn"** / **"Rejection Withdrawn"** notification: their approver
+reversed the decision within that window, the request is under review again, and any
+tokens taken have been returned. No action is needed from the employee.
 
 ---
 
@@ -192,8 +230,10 @@ then finalized by **HR**. Tokens are deducted on HR approval.
   to a page they can't open.
 - **Don't invent pages, routes, or buttons.** If something isn't in this document, say
   you're not sure and suggest the **FAQ** or contacting HR / an administrator.
-- **For status/token questions**, use the lifecycle and token facts above; remember
-  tokens are only deducted at HR approval and unused tokens expire each cycle.
+- **For status/token questions**, use the lifecycle and token facts above. Tokens are
+  deducted at *final* approval, which is HR only for Learning Subsidy — for Task
+  Offloading and Internal Coaching the manager's or coach's decision is final. Unused
+  tokens expire each cycle.
 - Keep answers short and action-oriented. Use lists for multi-step directions.
 
 ---
