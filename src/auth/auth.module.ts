@@ -14,6 +14,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { LocalStrategy } from './strategies/local.strategy';
 import { GoogleStrategy } from './strategies/google.strategy';
 import { MicrosoftStrategy } from './strategies/microsoft.strategy';
+import { OAuthErrorFilter } from './filters/oauth-error.filter';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { MicrosoftStrategy } from './strategies/microsoft.strategy';
     LocalStrategy,
     GoogleStrategy,
     MicrosoftStrategy,
+    OAuthErrorFilter,
   ],
   exports: [AuthService, JwtModule, PassportModule],
 })
