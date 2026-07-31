@@ -63,6 +63,31 @@ export class AnnouncementsController {
     return this.announcementsService.acknowledge(id, user.id);
   }
 
+  /**
+   * POST /announcements/:id/reactions — toggle the caller's reaction.
+   * Body: { emoji }. Tapping an emoji you've already used removes it.
+   */
+  @Post(':id/reactions')
+  @HttpCode(HttpStatus.OK)
+  toggleReaction(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+    @Body('emoji') emoji: string,
+  ) {
+    return this.announcementsService.toggleReaction(id, user.id, emoji ?? '');
+  }
+
+  /**
+   * GET /announcements/:id/viewers — who has read it, and how many of the
+   * active workforce that represents. Admin / HR only: for everyone else this
+   * is other people's reading habits.
+   */
+  @Get(':id/viewers')
+  @Roles(...AUTHOR_ROLES)
+  findViewers(@Param('id', ParseUUIDPipe) id: string) {
+    return this.announcementsService.findViewers(id);
+  }
+
   /** POST /announcements — Admin / HR only. */
   @Post()
   @Roles(...AUTHOR_ROLES)

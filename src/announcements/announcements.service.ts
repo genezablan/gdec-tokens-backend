@@ -9,6 +9,7 @@ import { In, Repository } from 'typeorm';
 import { Announcement } from '../entities/announcement.entity';
 import { AnnouncementRead } from '../entities/announcement-read.entity';
 import { AnnouncementAcknowledgement } from '../entities/announcement-acknowledgement.entity';
+import { AnnouncementReaction } from '../entities/announcement-reaction.entity';
 import { User } from '../entities/user.entity';
 import { CreateAnnouncementDto } from './dto/create-announcement.dto';
 import { UpdateAnnouncementDto } from './dto/update-announcement.dto';
@@ -30,6 +31,31 @@ export interface ApiAnnouncementAttachment {
   name: string | null;
 }
 
+export interface ApiAnnouncementReaction {
+  emoji: string;
+  count: number;
+  /** Whether the requesting user is one of the reactors. */
+  mine: boolean;
+}
+
+export interface ApiAnnouncementViewer {
+  id: string;
+  name: string;
+  avatarUrl: string | null;
+  position: string | null;
+  readAt: Date;
+  acknowledgedAt: Date | null;
+}
+
+export interface ApiAnnouncementViewers {
+  /** Everyone who could see it — the denominator for "N of M have read this". */
+  totalAudience: number;
+  totalViewers: number;
+  totalAcknowledged: number;
+  requiresAcknowledgement: boolean;
+  viewers: ApiAnnouncementViewer[];
+}
+
 export interface ApiAnnouncement {
   id: string;
   title: string;
@@ -42,6 +68,8 @@ export interface ApiAnnouncement {
   /** Per-viewer state — false for both when the request isn't user-scoped. */
   isRead: boolean;
   isAcknowledged: boolean;
+  /** Aggregated reactions, most-used first. Empty when nobody has reacted. */
+  reactions: ApiAnnouncementReaction[];
   author: ApiAnnouncementAuthor | null;
   createdAt: Date;
   updatedAt: Date;
@@ -64,6 +92,8 @@ export class AnnouncementsService {
     private readonly readRepo: Repository<AnnouncementRead>,
     @InjectRepository(AnnouncementAcknowledgement)
     private readonly ackRepo: Repository<AnnouncementAcknowledgement>,
+    @InjectRepository(AnnouncementReaction)
+    private readonly reactionRepo: Repository<AnnouncementReaction>,
     private readonly sanitizer: CommunitySanitizerService,
     private readonly s3Service: S3Service,
     private readonly emailService: EmailService,
@@ -124,6 +154,162 @@ export class AnnouncementsService {
     for (const a of items) {
       a.isRead = readIds.has(a.id);
       a.isAcknowledged = ackIds.has(a.id);
+    }
+
+    await this.applyReactions(items, viewerId);
+  }
+
+  /**
+   * Attach aggregated reaction counts, flagging the ones this viewer made.
+   *
+   * Grouped in SQL rather than by loading every reaction row — the count is all
+   * the UI needs, and a popular announcement shouldn't drag its whole reaction
+   * list across the wire to produce a number.
+   */
+  private async applyReactions(
+    items: ApiAnnouncement[],
+    viewerId: string,
+  ): Promise<void> {
+    const ids = items.map((a) => a.id);
+
+    const [counts, mine] = await Promise.all([
+      this.reactionRepo
+        .createQueryBuilder('r')
+        .select('r.announcementId', 'announcementId')
+        .addSelect('r.emoji', 'emoji')
+        .addSelect('COUNT(*)', 'count')
+        .where('r.announcementId IN (:...ids)', { ids })
+        .groupBy('r.announcementId')
+        .addGroupBy('r.emoji')
+        .getRawMany<{ announcementId: string; emoji: string; count: string }>(),
+      this.reactionRepo.find({
+        where: { userId: viewerId, announcementId: In(ids) },
+        select: { announcementId: true, emoji: true },
+      }),
+    ]);
+
+    const mineKeys = new Set(mine.map((r) => `${r.announcementId}:${r.emoji}`));
+    const byAnnouncement = new Map<string, ApiAnnouncementReaction[]>();
+    for (const row of counts) {
+      const list = byAnnouncement.get(row.announcementId) ?? [];
+      list.push({
+        emoji: row.emoji,
+        count: Number(row.count),
+        mine: mineKeys.has(`${row.announcementId}:${row.emoji}`),
+      });
+      byAnnouncement.set(row.announcementId, list);
+    }
+
+    for (const a of items) {
+      a.reactions = (byAnnouncement.get(a.id) ?? []).sort(
+        (x, y) => y.count - x.count || x.emoji.localeCompare(y.emoji),
+      );
+    }
+  }
+
+  /**
+   * Add or remove the viewer's reaction with this emoji — the same call does
+   * both, since tapping an emoji you've already used means "undo".
+   */
+  async toggleReaction(
+    id: string,
+    userId: string,
+    emoji: string,
+  ): Promise<ApiAnnouncement> {
+    const exists = await this.announcementRepo.exists({ where: { id } });
+    if (!exists) throw new NotFoundException('Announcement not found');
+
+    const trimmed = emoji.trim();
+    if (!trimmed) throw new BadRequestException('An emoji is required');
+
+    const existing = await this.reactionRepo.findOne({
+      where: { announcementId: id, userId, emoji: trimmed },
+    });
+
+    if (existing) {
+      await this.reactionRepo.delete({
+        announcementId: id,
+        userId,
+        emoji: trimmed,
+      });
+    } else {
+      await this.reactionRepo
+        .createQueryBuilder()
+        .insert()
+        .values({ announcementId: id, userId, emoji: trimmed })
+        .orIgnore()
+        .execute();
+    }
+
+    return this.findOne(id, userId);
+  }
+
+  /**
+   * Who has read an announcement — Admin / HR only (enforced at the controller).
+   *
+   * `totalAudience` counts active users so the UI can say "12 of 40", which is
+   * the number that actually matters for a policy that had to reach everyone.
+   * Ordered by most recent read first.
+   */
+  async findViewers(id: string): Promise<ApiAnnouncementViewers> {
+    const announcement = await this.announcementRepo.findOne({ where: { id } });
+    if (!announcement) throw new NotFoundException('Announcement not found');
+
+    const [reads, acks, totalAudience] = await Promise.all([
+      this.readRepo.find({
+        where: { announcementId: id },
+        relations: { user: true },
+        order: { readAt: 'DESC' },
+      }),
+      this.ackRepo.find({ where: { announcementId: id } }),
+      this.userRepo.count({ where: { isActive: true } }),
+    ]);
+
+    const ackAt = new Map(acks.map((a) => [a.userId, a.acknowledgedAt]));
+
+    const viewers: ApiAnnouncementViewer[] = reads
+      .filter((r) => r.user)
+      .map((r) => ({
+        id: r.user.id,
+        name: r.user.fullName,
+        avatarUrl: r.user.profilePicture ?? null,
+        position: r.user.position ?? null,
+        readAt: r.readAt,
+        acknowledgedAt: ackAt.get(r.userId) ?? null,
+      }));
+
+    await this.resolveViewerAvatars(viewers);
+
+    return {
+      totalAudience,
+      totalViewers: viewers.length,
+      totalAcknowledged: acks.length,
+      requiresAcknowledgement: announcement.requiresAcknowledgement,
+      viewers,
+    };
+  }
+
+  /** Same presign-and-dedupe treatment the author avatars get. */
+  private async resolveViewerAvatars(
+    viewers: ApiAnnouncementViewer[],
+  ): Promise<void> {
+    const needsResolving = (url: string | null): url is string =>
+      !!url && !url.startsWith('http');
+
+    const keys = [
+      ...new Set(viewers.map((v) => v.avatarUrl).filter(needsResolving)),
+    ];
+    if (keys.length === 0) return;
+
+    const signed = await Promise.all(
+      keys.map((key) => this.s3Service.getPresignedDownloadUrl(key, 900)),
+    );
+    const urlByKey = new Map(keys.map((key, i) => [key, signed[i]]));
+
+    for (const v of viewers) {
+      if (needsResolving(v.avatarUrl)) {
+        v.avatarUrl = urlByKey.get(v.avatarUrl) ?? v.avatarUrl;
+      }
     }
   }
 
@@ -327,6 +513,7 @@ export class AnnouncementsService {
       // Overwritten by applyViewerState when the request is user-scoped.
       isRead: false,
       isAcknowledged: false,
+      reactions: [],
       author: row.author
         ? {
             id: row.author.id,
