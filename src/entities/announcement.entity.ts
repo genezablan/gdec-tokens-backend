@@ -54,6 +54,23 @@ export class Announcement {
   @Column({ default: false })
   pinned: boolean;
 
+  /**
+   * Grouping label shown as a badge and used by the board's filter tabs.
+   * Free-form varchar rather than a Postgres enum so HR can be given new
+   * categories without a migration; the frontend styles the known ones and
+   * falls back to a neutral badge for anything else.
+   */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  category: string | null;
+
+  /**
+   * When true the announcement isn't just informational — each employee is asked
+   * to confirm they've read it, and until they do it counts towards "needs
+   * action". Acknowledgements are recorded in `announcement_acknowledgements`.
+   */
+  @Column({ default: false })
+  requiresAcknowledgement: boolean;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 

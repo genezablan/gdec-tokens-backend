@@ -44,4 +44,18 @@ export class CreateAnnouncementDto {
   @IsOptional()
   @IsBoolean()
   pinned?: boolean;
+
+  /**
+   * Grouping label — shown as a badge and used by the board's filter tabs.
+   * Free-form so new categories don't need a migration.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  category?: string;
+
+  /** Ask every employee to explicitly confirm they've read this. */
+  @IsOptional()
+  @IsBoolean()
+  requiresAcknowledgement?: boolean;
 }

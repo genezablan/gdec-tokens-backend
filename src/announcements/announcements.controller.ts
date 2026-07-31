@@ -25,16 +25,42 @@ const AUTHOR_ROLES = [UserRole.ADMIN, UserRole.HR_APPROVER];
 export class AnnouncementsController {
   constructor(private readonly announcementsService: AnnouncementsService) {}
 
-  /** GET /announcements — all authenticated users. */
+  /**
+   * GET /announcements — all authenticated users. Each item carries the caller's
+   * own read / acknowledged state, so the board can show what still needs them.
+   */
   @Get()
-  findAll() {
-    return this.announcementsService.findAll();
+  findAll(@CurrentUser() user: User) {
+    return this.announcementsService.findAll(user.id);
   }
 
   /** GET /announcements/:id */
   @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.announcementsService.findOne(id);
+  findOne(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: User) {
+    return this.announcementsService.findOne(id, user.id);
+  }
+
+  /**
+   * POST /announcements/:id/read — mark as read for the caller. Idempotent, and
+   * fire-and-forget from the client's point of view.
+   */
+  @Post(':id/read')
+  @HttpCode(HttpStatus.OK)
+  markRead(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: User) {
+    return this.announcementsService.markRead(id, user.id);
+  }
+
+  /**
+   * POST /announcements/:id/acknowledge — record the caller's explicit
+   * acknowledgement. 400 if the announcement never asked for one.
+   */
+  @Post(':id/acknowledge')
+  @HttpCode(HttpStatus.OK)
+  acknowledge(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.announcementsService.acknowledge(id, user.id);
   }
 
   /** POST /announcements — Admin / HR only. */

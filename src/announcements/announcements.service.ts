@@ -1,7 +1,14 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Announcement } from '../entities/announcement.entity';
+import { AnnouncementRead } from '../entities/announcement-read.entity';
+import { AnnouncementAcknowledgement } from '../entities/announcement-acknowledgement.entity';
 import { User } from '../entities/user.entity';
 import { CreateAnnouncementDto } from './dto/create-announcement.dto';
 import { UpdateAnnouncementDto } from './dto/update-announcement.dto';
@@ -30,6 +37,11 @@ export interface ApiAnnouncement {
   bodyHtml: string | null;
   attachments: ApiAnnouncementAttachment[];
   pinned: boolean;
+  category: string | null;
+  requiresAcknowledgement: boolean;
+  /** Per-viewer state — false for both when the request isn't user-scoped. */
+  isRead: boolean;
+  isAcknowledged: boolean;
   author: ApiAnnouncementAuthor | null;
   createdAt: Date;
   updatedAt: Date;
@@ -48,28 +60,114 @@ export class AnnouncementsService {
     private readonly announcementRepo: Repository<Announcement>,
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
+    @InjectRepository(AnnouncementRead)
+    private readonly readRepo: Repository<AnnouncementRead>,
+    @InjectRepository(AnnouncementAcknowledgement)
+    private readonly ackRepo: Repository<AnnouncementAcknowledgement>,
     private readonly sanitizer: CommunitySanitizerService,
     private readonly s3Service: S3Service,
     private readonly emailService: EmailService,
     private readonly notifications: NotificationsService,
   ) {}
 
-  /** Everyone: pinned first, then newest. */
-  async findAll(): Promise<ApiAnnouncement[]> {
+  /**
+   * Everyone: pinned first, then newest. Pass `viewerId` to have each item
+   * carry that user's read / acknowledged state — resolved in two set queries
+   * rather than a join per row.
+   */
+  async findAll(viewerId?: string): Promise<ApiAnnouncement[]> {
     const rows = await this.announcementRepo.find({
       relations: { author: true },
       order: { pinned: 'DESC', createdAt: 'DESC' },
     });
-    return this.mapMany(rows);
+    const mapped = await this.mapMany(rows);
+    await this.applyViewerState(mapped, viewerId);
+    return mapped;
   }
 
-  async findOne(id: string): Promise<ApiAnnouncement> {
+  async findOne(id: string, viewerId?: string): Promise<ApiAnnouncement> {
     const row = await this.announcementRepo.findOne({
       where: { id },
       relations: { author: true },
     });
     if (!row) throw new NotFoundException('Announcement not found');
-    return this.mapOne(row);
+    const mapped = await this.mapOne(row);
+    await this.applyViewerState([mapped], viewerId);
+    return mapped;
+  }
+
+  /**
+   * Stamp each item with whether this viewer has read / acknowledged it.
+   * Two queries for the whole page regardless of length — the alternative
+   * (a correlated subquery per announcement) scales badly with the board.
+   */
+  private async applyViewerState(
+    items: ApiAnnouncement[],
+    viewerId?: string,
+  ): Promise<void> {
+    if (!viewerId || items.length === 0) return;
+    const ids = items.map((a) => a.id);
+
+    const [reads, acks] = await Promise.all([
+      this.readRepo.find({
+        where: { userId: viewerId, announcementId: In(ids) },
+        select: { announcementId: true },
+      }),
+      this.ackRepo.find({
+        where: { userId: viewerId, announcementId: In(ids) },
+        select: { announcementId: true },
+      }),
+    ]);
+
+    const readIds = new Set(reads.map((r) => r.announcementId));
+    const ackIds = new Set(acks.map((r) => r.announcementId));
+    for (const a of items) {
+      a.isRead = readIds.has(a.id);
+      a.isAcknowledged = ackIds.has(a.id);
+    }
+  }
+
+  /**
+   * Mark an announcement read for this user. Idempotent — re-opening something
+   * already read is a no-op rather than an error or a moved timestamp.
+   */
+  async markRead(id: string, userId: string): Promise<{ success: true }> {
+    const exists = await this.announcementRepo.exists({ where: { id } });
+    if (!exists) throw new NotFoundException('Announcement not found');
+
+    await this.readRepo
+      .createQueryBuilder()
+      .insert()
+      .values({ announcementId: id, userId })
+      .orIgnore() // ON CONFLICT DO NOTHING — the composite PK is the guard
+      .execute();
+
+    return { success: true };
+  }
+
+  /**
+   * Record an explicit acknowledgement. Also marks the announcement read: you
+   * cannot acknowledge something without having opened it, and leaving it unread
+   * would be contradictory.
+   */
+  async acknowledge(id: string, userId: string): Promise<ApiAnnouncement> {
+    const row = await this.announcementRepo.findOne({ where: { id } });
+    if (!row) throw new NotFoundException('Announcement not found');
+    if (!row.requiresAcknowledgement) {
+      throw new BadRequestException(
+        'This announcement does not require acknowledgement',
+      );
+    }
+
+    await this.ackRepo
+      .createQueryBuilder()
+      .insert()
+      .values({ announcementId: id, userId })
+      .orIgnore()
+      .execute();
+    await this.markRead(id, userId);
+
+    return this.findOne(id, userId);
   }
 
   /** Admin / HR only (enforced at the controller). */
@@ -88,6 +186,8 @@ export class AnnouncementsService {
         bodyHtml: bodyHtml || null,
         attachments: this.normalizeAttachments(dto.attachments),
         pinned: dto.pinned ?? false,
+        category: dto.category?.trim() || null,
+        requiresAcknowledgement: dto.requiresAcknowledgement ?? false,
       }),
     );
     const created = await this.findOne(saved.id);
@@ -175,6 +275,10 @@ export class AnnouncementsService {
       row.attachments = this.normalizeAttachments(dto.attachments);
     }
     if (dto.pinned !== undefined) row.pinned = dto.pinned;
+    if (dto.category !== undefined) row.category = dto.category?.trim() || null;
+    if (dto.requiresAcknowledgement !== undefined) {
+      row.requiresAcknowledgement = dto.requiresAcknowledgement;
+    }
 
     await this.announcementRepo.save(row);
     return this.findOne(id);
@@ -218,6 +322,11 @@ export class AnnouncementsService {
       bodyHtml: row.bodyHtml,
       attachments: (row.attachments ?? []).map((a) => ({ url: a.url, name: a.name })),
       pinned: row.pinned,
+      category: row.category ?? null,
+      requiresAcknowledgement: row.requiresAcknowledgement ?? false,
+      // Overwritten by applyViewerState when the request is user-scoped.
+      isRead: false,
+      isAcknowledged: false,
       author: row.author
         ? {
             id: row.author.id,
