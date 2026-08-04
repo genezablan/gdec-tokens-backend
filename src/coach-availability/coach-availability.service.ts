@@ -13,15 +13,22 @@ import { CoachingSessionStatus } from '../common/enums';
 import { CreateAvailabilitySlotDto } from './dto/create-availability-slot.dto';
 import { UpdateCoachingHoursDto } from './dto/update-coaching-hours.dto';
 import { CalendarService } from '../calendar/calendar.service';
+import {
+  addBusinessDays,
+  utcToWallClock,
+  wallClockPartsToUtc,
+  wallClockToUtc,
+} from '../common/utils/timezone';
 
 /** How far ahead to scan Outlook for conflicts when syncing (days). */
 const SYNC_WINDOW_DAYS = 56;
 /** How far ahead to generate bookable slots from Outlook free time (days). */
 const BOOKING_HORIZON_DAYS = 28;
 
-const pad = (n: number) => String(n).padStart(2, '0');
-const hhmm = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-const ymd = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+// Slots are described in the business timezone, not the server's — see
+// `common/utils/timezone.ts`.
+const hhmm = (d: Date) => utcToWallClock(d).time;
+const ymd = (d: Date) => utcToWallClock(d).date;
 
 export interface BookableSlot {
   id: string;
@@ -69,10 +76,14 @@ export class CoachAvailabilityService {
       }
       // A day can have several windows (e.g. 9–12 and 1–5); they just can't overlap.
       for (const [day, windows] of byDay) {
-        const sorted = [...windows].sort((a, b) => a.startTime.localeCompare(b.startTime));
+        const sorted = [...windows].sort((a, b) =>
+          a.startTime.localeCompare(b.startTime),
+        );
         for (let i = 0; i < sorted.length - 1; i++) {
           if (sorted[i].endTime > sorted[i + 1].startTime) {
-            throw new BadRequestException(`Coaching windows for day ${day} overlap`);
+            throw new BadRequestException(
+              `Coaching windows for day ${day} overlap`,
+            );
           }
         }
       }
@@ -81,8 +92,10 @@ export class CoachAvailabilityService {
     const coach = await this.userRepo.findOne({ where: { id: coachId } });
     if (!coach) throw new NotFoundException('Coach not found');
 
-    if (dto.coachingWeeklyHours !== undefined) coach.coachingWeeklyHours = dto.coachingWeeklyHours;
-    if (dto.coachingSessionMinutes !== undefined) coach.coachingSessionMinutes = dto.coachingSessionMinutes;
+    if (dto.coachingWeeklyHours !== undefined)
+      coach.coachingWeeklyHours = dto.coachingWeeklyHours;
+    if (dto.coachingSessionMinutes !== undefined)
+      coach.coachingSessionMinutes = dto.coachingSessionMinutes;
     await this.userRepo.save(coach);
     return this.getCoachingHours(coachId);
   }
@@ -102,14 +115,20 @@ export class CoachAvailabilityService {
     const coach = await this.userRepo.findOne({ where: { id: coachId } });
     if (!coach) throw new NotFoundException('Coach not found');
 
-    const hasHours = !!coach.coachingWeeklyHours?.length && !!coach.coachingSessionMinutes;
+    const hasHours =
+      !!coach.coachingWeeklyHours?.length && !!coach.coachingSessionMinutes;
     const connected = await this.calendarService.isConnected(coachId);
     if (!hasHours || !connected) return { connected, hasHours, slots: [] };
 
     const now = new Date();
-    const from = new Date();
-    from.setHours(0, 0, 0, 0);
-    const to = new Date(from.getTime() + BOOKING_HORIZON_DAYS * 86400000);
+    // Walk business-timezone calendar days: "today" and each window's hours mean
+    // the office's day and clock, not the server's.
+    const firstDay = utcToWallClock(now).date;
+    const from = wallClockToUtc(firstDay, '00:00');
+    const to = wallClockToUtc(
+      addBusinessDays(firstDay, BOOKING_HORIZON_DAYS),
+      '00:00',
+    );
 
     const busy = await this.calendarService.getBusyIntervals(coachId, from, to);
 
@@ -129,7 +148,10 @@ export class CoachAvailabilityService {
       end: new Date(new Date(s.scheduledAt).getTime() + stepMs),
     }));
 
-    const windowsByDay = new Map<number, { startTime: string; endTime: string }[]>();
+    const windowsByDay = new Map<
+      number,
+      { startTime: string; endTime: string }[]
+    >();
     for (const w of coach.coachingWeeklyHours ?? []) {
       if (!windowsByDay.has(w.day)) windowsByDay.set(w.day, []);
       windowsByDay.get(w.day)!.push(w);
@@ -140,18 +162,20 @@ export class CoachAvailabilityService {
 
     const slots: BookableSlot[] = [];
     for (let i = 0; i < BOOKING_HORIZON_DAYS; i++) {
-      const day = new Date(from.getTime() + i * 86400000);
-      const dayWindows = windowsByDay.get(day.getDay());
+      const dayDate = addBusinessDays(firstDay, i);
+      // Weekday in the business zone — `getDay()` on a UTC server reads the
+      // previous day for anything before 08:00 local and matches the wrong window.
+      const dayWindows = windowsByDay.get(
+        utcToWallClock(wallClockToUtc(dayDate, '12:00')).weekday,
+      );
       if (!dayWindows) continue;
 
       for (const window of dayWindows) {
         const [sh, sm] = window.startTime.split(':').map(Number);
         const [eh, em] = window.endTime.split(':').map(Number);
 
-        const windowEnd = new Date(day);
-        windowEnd.setHours(eh, em, 0, 0);
-        let slotStart = new Date(day);
-        slotStart.setHours(sh, sm, 0, 0);
+        const windowEnd = wallClockPartsToUtc(dayDate, eh, em);
+        let slotStart = wallClockPartsToUtc(dayDate, sh, sm);
 
         while (slotStart.getTime() + stepMs <= windowEnd.getTime() + 1) {
           const slotEnd = new Date(slotStart.getTime() + stepMs);
@@ -238,14 +262,16 @@ export class CoachAvailabilityService {
       throw new BadRequestException('Outlook calendar is not connected');
     }
 
-    const from = new Date();
-    from.setHours(0, 0, 0, 0);
-    const to = new Date(from.getTime() + SYNC_WINDOW_DAYS * 86400000);
+    // Scan from the start of the business day, in the business zone.
+    const today = utcToWallClock(new Date()).date;
+    const from = wallClockToUtc(today, '00:00');
+    const to = wallClockToUtc(
+      addBusinessDays(today, SYNC_WINDOW_DAYS),
+      '00:00',
+    );
 
     const busy = await this.calendarService.getBusyIntervals(coachId, from, to);
     if (busy.length === 0) return { blocked: 0, blockedSlots: [] };
-
-    const today = from.toISOString().split('T')[0];
     const slots = await this.availabilityRepo.find({
       where: {
         coachId,
@@ -257,8 +283,8 @@ export class CoachAvailabilityService {
 
     const blockedSlots: CoachAvailability[] = [];
     for (const slot of slots) {
-      const slotStart = new Date(`${slot.availableDate}T${slot.startTime}`);
-      const slotEnd = new Date(`${slot.availableDate}T${slot.endTime}`);
+      const slotStart = wallClockToUtc(slot.availableDate, slot.startTime);
+      const slotEnd = wallClockToUtc(slot.availableDate, slot.endTime);
       if (
         Number.isNaN(slotStart.getTime()) ||
         Number.isNaN(slotEnd.getTime())

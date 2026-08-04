@@ -148,6 +148,15 @@ export class CoachingSession {
   @Column({ type: 'varchar', length: 20, nullable: true })
   calendarSyncStatus: string | null;
 
+  /**
+   * True when this time was accepted without being able to reach the coach's
+   * Outlook — a stale token or a Graph outage. The booking is allowed through
+   * (booking shouldn't depend on Microsoft's uptime), so this flag is what tells
+   * the coach the slot was never checked against their calendar.
+   */
+  @Column({ type: 'boolean', default: false })
+  outlookCheckFailed: boolean;
+
   @CreateDateColumn()
   createdAt: Date;
 

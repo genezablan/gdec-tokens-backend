@@ -267,7 +267,9 @@ export class CalendarService {
     }
     conn.accessTokenEnc = this.crypto.encrypt(params.accessToken);
     conn.refreshTokenEnc = this.crypto.encrypt(params.refreshToken);
-    conn.expiresAt = new Date(Date.now() + (params.expiresInSec ?? 3600) * 1000);
+    conn.expiresAt = new Date(
+      Date.now() + (params.expiresInSec ?? 3600) * 1000,
+    );
     conn.scopes = CALENDAR_SCOPES.join(' ');
     conn.accountEmail = params.accountEmail ?? conn.accountEmail ?? null;
     conn.connectedAt = conn.connectedAt ?? new Date();
@@ -383,6 +385,23 @@ export class CalendarService {
   }
 
   /**
+   * Move an existing event to a new time. Graph re-invites the attendees, so
+   * only call this when the event really is at the wrong time.
+   */
+  async updateEventTime(
+    coachId: string,
+    eventId: string,
+    start: Date,
+    end: Date,
+  ): Promise<void> {
+    const accessToken = await this.getValidAccessToken(coachId);
+    await this.graphRequest('PATCH', `/me/events/${eventId}`, accessToken, {
+      start: { dateTime: toGraphDateTime(start), timeZone: 'UTC' },
+      end: { dateTime: toGraphDateTime(end), timeZone: 'UTC' },
+    });
+  }
+
+  /**
    * The current user's own Outlook busy intervals for the next 4 weeks, as ISO
    * strings — live and display-only (nothing stored). Empty if not connected or
    * on any error (best-effort).
@@ -443,7 +462,11 @@ export class CalendarService {
       const start = parseGraphUtc(e.start?.dateTime);
       const end = parseGraphUtc(e.end?.dateTime);
       if (start && end) {
-        intervals.push({ start, end, subject: includeSubject ? (e.subject ?? null) : null });
+        intervals.push({
+          start,
+          end,
+          subject: includeSubject ? (e.subject ?? null) : null,
+        });
       }
     }
     return intervals;

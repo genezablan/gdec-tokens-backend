@@ -25,6 +25,7 @@ import { EmailService } from '../common/services/email.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../entities/notification.entity';
 import { CalendarService } from '../calendar/calendar.service';
+import { wallClockToUtc } from '../common/utils/timezone';
 
 const SESSIONS_PER_CYCLE = 3;
 const DEFAULT_SESSION_MINUTES = 60;
@@ -163,16 +164,25 @@ export class CoachingSessionsService {
    * removeSessionFromCalendar below: a stale token or a Graph outage logs a
    * warning and lets the (already locally-validated) booking proceed rather
    * than making booking depend on Microsoft's uptime.
+   *
+   * Throws on a genuine clash. Returns whether the check actually ran, so the
+   * caller can mark the session as unverified — failing open is a deliberate
+   * availability trade-off, but it should never be silent.
    */
   private async assertNoOutlookConflict(
     coachId: string,
     availableDate: string,
     startTime: string,
     endTime: string,
-  ): Promise<void> {
-    if (!(await this.calendarService.isConnected(coachId))) return;
-    const start = new Date(`${availableDate}T${startTime}`);
-    const end = new Date(`${availableDate}T${endTime}`);
+  ): Promise<{ checkFailed: boolean }> {
+    // Nothing to check against — the coach's calendar isn't linked. That's a
+    // visible state of its own, not a failed check.
+    if (!(await this.calendarService.isConnected(coachId)))
+      return { checkFailed: false };
+    // Slots are business-timezone wall clocks; Graph answers in real UTC. Resolve
+    // them the same way or the two sides compare different hours entirely.
+    const start = wallClockToUtc(availableDate, startTime);
+    const end = wallClockToUtc(availableDate, endTime);
 
     let busy: { start: Date; end: Date }[];
     try {
@@ -181,7 +191,7 @@ export class CoachingSessionsService {
       this.logger.warn(
         `Outlook conflict check failed for coach ${coachId}, proceeding without it: ${(err as Error).message}`,
       );
-      return;
+      return { checkFailed: true };
     }
 
     if (busy.some((b) => start < b.end && end > b.start)) {
@@ -189,6 +199,7 @@ export class CoachingSessionsService {
         "This time conflicts with the coach's Outlook calendar. Please choose another slot.",
       );
     }
+    return { checkFailed: false };
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -199,7 +210,7 @@ export class CoachingSessionsService {
     slot: CoachAvailability | null | undefined,
   ): Date {
     if (slot?.endTime && slot?.availableDate) {
-      const end = new Date(`${slot.availableDate}T${slot.endTime}`);
+      const end = wallClockToUtc(slot.availableDate, slot.endTime);
       if (!Number.isNaN(end.getTime()) && end > scheduledAt) return end;
     }
     return new Date(scheduledAt.getTime() + DEFAULT_SESSION_MINUTES * 60_000);
@@ -343,7 +354,8 @@ export class CoachingSessionsService {
       .filter((s) => !hidden.includes(s.status))
       .map((s) => {
         const isCoach = s.coachId === userId;
-        const optionName = s.tokenRequest?.developmentOption?.name ?? 'Coaching';
+        const optionName =
+          s.tokenRequest?.developmentOption?.name ?? 'Coaching';
         const counterpart = isCoach
           ? (s.employee?.fullName ?? 'Employee')
           : (s.coach?.fullName ?? 'Coach');
@@ -386,24 +398,55 @@ export class CoachingSessionsService {
       );
     }
 
-    // Count active sessions (exclude cancelled, declined, and no-show so the slot can be rebooked)
-    const bookedCount = await this.sessionRepo.count({
+    // Which numbers in the cycle are still held? Released sessions (cancelled,
+    // declined, no-show) give their number back so it can be rebooked.
+    //
+    // This must be resolved by *number*, not by count: releasing session 1 while
+    // 2 and 3 are still active leaves a count of 2, and numbering the rebooking
+    // `count + 1` would hand out 3 a second time instead of refilling the gap.
+    const activeSessions = await this.sessionRepo.find({
       where: {
         tokenRequestId: requestId,
         status: Not(In(RELEASED_STATUSES)),
       },
+      select: ['sessionNumber'],
     });
+    const takenNumbers = new Set(activeSessions.map((s) => s.sessionNumber));
+    const freeNumbers = Array.from(
+      { length: SESSIONS_PER_CYCLE },
+      (_, i) => i + 1,
+    ).filter((n) => !takenNumbers.has(n));
 
-    if (bookedCount >= SESSIONS_PER_CYCLE) {
+    if (freeNumbers.length === 0) {
       throw new BadRequestException(
-        'All 3 sessions for this coaching cycle are already booked',
+        `All ${SESSIONS_PER_CYCLE} sessions for this coaching cycle are already booked`,
       );
+    }
+
+    // Honour the session the caller actually clicked; fall back to the lowest
+    // free slot for callers that don't specify one.
+    let sessionNumber: number;
+    if (dto.sessionNumber === undefined) {
+      sessionNumber = freeNumbers[0];
+    } else if (dto.sessionNumber > SESSIONS_PER_CYCLE) {
+      throw new BadRequestException(
+        `Session number must be between 1 and ${SESSIONS_PER_CYCLE}`,
+      );
+    } else if (takenNumbers.has(dto.sessionNumber)) {
+      throw new BadRequestException(
+        `Session ${dto.sessionNumber} is already booked`,
+      );
+    } else {
+      sessionNumber = dto.sessionNumber;
     }
 
     // Resolve the slot: either an existing manual slot (availabilityId) or an
     // Outlook-derived time slot (availableDate + startTime + endTime), for which
     // we create a backing availability row so downstream displays stay unchanged.
     let slot: CoachAvailability | null;
+    // Carried onto the session so the coach can see the slot was taken without
+    // our being able to read their calendar.
+    let outlookCheckFailed = false;
     if (dto.availabilityId) {
       slot = await this.availabilityRepo.findOne({
         where: { id: dto.availabilityId },
@@ -411,21 +454,21 @@ export class CoachingSessionsService {
       if (!slot) throw new NotFoundException('Availability slot not found');
       // This legacy path never went through the Outlook-live getBookableSlots
       // check, so verify it here too.
-      await this.assertNoOutlookConflict(
+      ({ checkFailed: outlookCheckFailed } = await this.assertNoOutlookConflict(
         coachId,
         slot.availableDate,
         slot.startTime,
         slot.endTime,
-      );
+      ));
     } else if (dto.availableDate && dto.startTime && dto.endTime) {
       // Re-check Outlook live — the slot list the employee picked from may be
       // stale (fetched before the coach's calendar changed).
-      await this.assertNoOutlookConflict(
+      ({ checkFailed: outlookCheckFailed } = await this.assertNoOutlookConflict(
         coachId,
         dto.availableDate,
         dto.startTime,
         dto.endTime,
-      );
+      ));
       // Not saved yet — inserted below only once every conflict check has
       // passed, so a rejected booking leaves no orphan slot row.
       slot = this.availabilityRepo.create({
@@ -452,9 +495,10 @@ export class CoachingSessionsService {
     if (!slot.isActive)
       throw new BadRequestException('This slot is no longer available');
 
-    // Build scheduledAt from date + startTime
-    // pg returns time columns as "HH:MM:SS", so don't append extra ":00"
-    const scheduledAt = new Date(`${slot.availableDate}T${slot.startTime}`);
+    // Build scheduledAt from date + startTime. The slot is a business-timezone
+    // wall clock, so it must be resolved against that zone rather than the
+    // server's — otherwise the stored instant drifts with wherever this runs.
+    const scheduledAt = wallClockToUtc(slot.availableDate, slot.startTime);
     if (scheduledAt < new Date()) {
       throw new BadRequestException('Cannot book a slot in the past');
     }
@@ -496,8 +540,9 @@ export class CoachingSessionsService {
       coachId,
       employeeId: request.employeeId,
       availabilityId: slot.id,
-      sessionNumber: bookedCount + 1,
+      sessionNumber,
       scheduledAt,
+      outlookCheckFailed,
       // Awaiting coach confirmation before the session is locked in
       status: CoachingSessionStatus.PENDING_COACH_APPROVAL,
     });
@@ -930,7 +975,7 @@ export class CoachingSessionsService {
     }
     if (callerId === session.cancelRequestedById) {
       throw new ForbiddenException(
-        "Waiting for the other party to respond to your cancellation request",
+        'Waiting for the other party to respond to your cancellation request',
       );
     }
 
@@ -1062,6 +1107,7 @@ export class CoachingSessionsService {
     CoachingSessionStatus.SCHEDULED, // reschedule instead of cancelling
     CoachingSessionStatus.PENDING_CANCELLATION, // instead of approving the cancel
     CoachingSessionStatus.PENDING_EMPLOYEE_APPROVAL, // re-propose (negotiation loop)
+    CoachingSessionStatus.NO_SHOW, // offer a replacement slot after a no-show
   ];
 
   /** Null out every proposal field. Does NOT touch the cancellation fields. */
@@ -1097,12 +1143,28 @@ export class CoachingSessionsService {
         'Only the assigned coach can propose a new time for this session',
       );
     }
-    if (
-      !CoachingSessionsService.PROPOSABLE_STATUSES.includes(session.status)
-    ) {
+    if (!CoachingSessionsService.PROPOSABLE_STATUSES.includes(session.status)) {
       throw new BadRequestException(
         `Cannot propose a new time — session is ${session.status}`,
       );
+    }
+
+    // Proposing from a released status (no-show) revives that session, which
+    // reclaims its number in the cycle. Refuse if the employee already rebooked
+    // that slot, so a cycle never ends up with two active session 1s.
+    if (RELEASED_STATUSES.includes(session.status)) {
+      const alreadyRebooked = await this.sessionRepo.count({
+        where: {
+          tokenRequestId: requestId,
+          sessionNumber: session.sessionNumber,
+          status: Not(In(RELEASED_STATUSES)),
+        },
+      });
+      if (alreadyRebooked > 0) {
+        throw new BadRequestException(
+          `Session ${session.sessionNumber} has already been rebooked`,
+        );
+      }
     }
 
     // Resolve the proposed time: an existing manual slot or an Outlook-derived
@@ -1138,7 +1200,7 @@ export class CoachingSessionsService {
       );
     }
 
-    const proposedStart = new Date(`${proposedDate}T${proposedStartTime}`);
+    const proposedStart = wallClockToUtc(proposedDate, proposedStartTime);
     if (proposedStart < new Date()) {
       throw new BadRequestException('Cannot propose a time in the past');
     }
@@ -1156,7 +1218,7 @@ export class CoachingSessionsService {
       proposedStartTime,
       proposedEndTime,
     );
-    const proposedEnd = new Date(`${proposedDate}T${proposedEndTime}`);
+    const proposedEnd = wallClockToUtc(proposedDate, proposedEndTime);
     const proposeBlockers = {
       excludeStatuses: RELEASED_STATUSES,
       excludeSessionId: session.id,
@@ -1241,7 +1303,9 @@ export class CoachingSessionsService {
     });
     if (!session) throw new NotFoundException('Session not found');
     if (session.status !== CoachingSessionStatus.PENDING_EMPLOYEE_APPROVAL) {
-      throw new BadRequestException('This session has no pending time proposal');
+      throw new BadRequestException(
+        'This session has no pending time proposal',
+      );
     }
     if (callerId !== session.employeeId) {
       throw new ForbiddenException(
@@ -1253,30 +1317,36 @@ export class CoachingSessionsService {
       !session.proposedStartTime ||
       !session.proposedEndTime
     ) {
-      throw new BadRequestException('This session has no pending time proposal');
+      throw new BadRequestException(
+        'This session has no pending time proposal',
+      );
     }
 
-    const newStart = new Date(
-      `${session.proposedDate}T${session.proposedStartTime}`,
+    const newStart = wallClockToUtc(
+      session.proposedDate,
+      session.proposedStartTime,
     );
     if (newStart < new Date()) {
       throw new BadRequestException(
         'The proposed time has already passed — please ask your coach for a new one.',
       );
     }
-    let newEnd = new Date(`${session.proposedDate}T${session.proposedEndTime}`);
+    let newEnd = wallClockToUtc(session.proposedDate, session.proposedEndTime);
     if (Number.isNaN(newEnd.getTime()) || newEnd <= newStart) {
       newEnd = new Date(newStart.getTime() + DEFAULT_SESSION_MINUTES * 60_000);
     }
 
     // Authoritative re-checks before locking the new time in (mirrors confirm:
     // pending bookings don't block, sessions that hold their time do).
-    await this.assertNoOutlookConflict(
-      session.coachId,
-      session.proposedDate,
-      session.proposedStartTime,
-      session.proposedEndTime,
-    );
+    // This is the time the session actually ends up at, so its verification
+    // state replaces whatever the original booking recorded.
+    ({ checkFailed: session.outlookCheckFailed } =
+      await this.assertNoOutlookConflict(
+        session.coachId,
+        session.proposedDate,
+        session.proposedStartTime,
+        session.proposedEndTime,
+      ));
     const acceptBlockers = {
       excludeStatuses: [
         ...RELEASED_STATUSES,
@@ -1412,7 +1482,9 @@ export class CoachingSessionsService {
     });
     if (!session) throw new NotFoundException('Session not found');
     if (session.status !== CoachingSessionStatus.PENDING_EMPLOYEE_APPROVAL) {
-      throw new BadRequestException('This session has no pending time proposal');
+      throw new BadRequestException(
+        'This session has no pending time proposal',
+      );
     }
     if (callerId !== session.employeeId) {
       throw new ForbiddenException(
@@ -1512,7 +1584,9 @@ export class CoachingSessionsService {
     });
     if (!session) throw new NotFoundException('Session not found');
     if (session.status !== CoachingSessionStatus.PENDING_EMPLOYEE_APPROVAL) {
-      throw new BadRequestException('This session has no pending time proposal');
+      throw new BadRequestException(
+        'This session has no pending time proposal',
+      );
     }
     if (callerId !== session.employeeId) {
       throw new ForbiddenException(
@@ -1573,7 +1647,9 @@ export class CoachingSessionsService {
     });
     if (!session) throw new NotFoundException('Session not found');
     if (session.status !== CoachingSessionStatus.PENDING_EMPLOYEE_APPROVAL) {
-      throw new BadRequestException('This session has no pending time proposal');
+      throw new BadRequestException(
+        'This session has no pending time proposal',
+      );
     }
     if (session.coachId !== coachId) {
       throw new ForbiddenException(
