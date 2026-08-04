@@ -7,8 +7,13 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { TokenBalance } from '../entities/token-balance.entity';
+import { TokenRequest } from '../entities/token-request.entity';
 import { User } from '../entities/user.entity';
-import { EmployeeStatus } from '../common/enums';
+import {
+  DevelopmentOptionType,
+  EmployeeStatus,
+  RequestStatus,
+} from '../common/enums';
 import { EmailService } from '../common/services/email.service';
 
 const TOKENS_PER_YEAR = 6;
@@ -17,17 +22,30 @@ export interface TokenBalanceSummary {
   id: string;
   userId: string;
   year: number;
-  allocated: number;     // base allocation (always 6)
-  boostTokens: number;   // additional tokens granted by admin
-  used: number;          // tokens spent on approved requests
-  remaining: number;     // allocated + boostTokens - used
+  allocated: number; // base allocation (always 6)
+  boostTokens: number; // additional tokens granted by admin
+  used: number; // tokens spent on approved requests
+  remaining: number; // allocated + boostTokens - used
+}
+
+/** One approved request — the "where" behind a slice of a year's `used` total. */
+export interface TokenUsageEntry {
+  requestId: string;
+  optionName: string; // development option name at read time
+  type: DevelopmentOptionType; // snapshot taken at submission
+  tokenCost: number; // snapshot taken at submission
+  spentAt: Date | null; // when the finalizing approval landed
+}
+
+export interface TokenBalanceHistoryEntry extends TokenBalanceSummary {
+  usage: TokenUsageEntry[]; // newest first; sums to `used`
 }
 
 export interface TokenDashboard {
-  availableTokens: number;  // remaining (allocated + boostTokens - used)
-  usedThisYear: number;     // used
-  baseAllocation: number;   // allocated
-  boostTokens: number;      // boostTokens
+  availableTokens: number; // remaining (allocated + boostTokens - used)
+  usedThisYear: number; // used
+  baseAllocation: number; // allocated
+  boostTokens: number; // boostTokens
   year: number;
 }
 
@@ -38,6 +56,8 @@ export class TokenBalancesService {
   constructor(
     @InjectRepository(TokenBalance)
     private readonly tokenBalanceRepository: Repository<TokenBalance>,
+    @InjectRepository(TokenRequest)
+    private readonly tokenRequestRepository: Repository<TokenRequest>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly emailService: EmailService,
@@ -94,14 +114,83 @@ export class TokenBalancesService {
   }
 
   /**
-   * Get all yearly balances for a user (history), ordered newest first.
+   * Approved requests grouped by year — the breakdown behind each year's
+   * `used` total.
+   *
+   * Only an APPROVED request spends tokens (`deductTokens` runs on final
+   * approval, `refundTokens` only when that approval is undone), and an
+   * approved request can no longer be cancelled. So these entries add up to
+   * `used` for the year.
    */
-  async getHistory(userId: string): Promise<TokenBalanceSummary[]> {
+  private async getUsageByYear(
+    userId: string,
+  ): Promise<Map<number, TokenUsageEntry[]>> {
+    const requests = await this.tokenRequestRepository.find({
+      where: { employeeId: userId, status: RequestStatus.APPROVED },
+      relations: ['developmentOption'],
+    });
+
+    const byYear = new Map<number, TokenUsageEntry[]>();
+
+    for (const request of requests) {
+      const entry: TokenUsageEntry = {
+        requestId: request.id,
+        // The option's name isn't snapshotted on the request, so fall back to
+        // the type snapshot if the option row was since deleted — same
+        // fallback the approval email uses.
+        optionName:
+          request.developmentOption?.name ?? this.humanizeType(request.type),
+        type: request.type,
+        tokenCost: request.tokenCost,
+        // Options configured to skip HR are finalized by the manager/coach,
+        // leaving hrApprovedAt null.
+        spentAt: request.hrApprovedAt ?? request.managerApprovedAt ?? null,
+      };
+
+      const existing = byYear.get(request.year);
+      if (existing) existing.push(entry);
+      else byYear.set(request.year, [entry]);
+    }
+
+    // Newest first, but keep undated rows at the bottom rather than letting
+    // Postgres' NULLS FIRST ordering float them to the top.
+    for (const entries of byYear.values()) {
+      entries.sort((a, b) => {
+        if (!a.spentAt) return 1;
+        if (!b.spentAt) return -1;
+        return b.spentAt.getTime() - a.spentAt.getTime();
+      });
+    }
+
+    return byYear;
+  }
+
+  /** 'task_offloading' → 'Task Offloading' */
+  private humanizeType(type: DevelopmentOptionType): string {
+    return type
+      .split('_')
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+  }
+
+  /**
+   * Get all yearly balances for a user (history), ordered newest first, each
+   * with the approved requests that consumed that year's tokens.
+   */
+  async getHistory(userId: string): Promise<TokenBalanceHistoryEntry[]> {
     const balances = await this.tokenBalanceRepository.find({
       where: { userId },
       order: { year: 'DESC' },
     });
-    return balances.map((b) => this.toSummary(b));
+
+    // One query for every year's usage, then grouped in memory — avoids a
+    // per-year round trip.
+    const usageByYear = await this.getUsageByYear(userId);
+
+    return balances.map((b) => ({
+      ...this.toSummary(b),
+      usage: usageByYear.get(b.year) ?? [],
+    }));
   }
 
   /**
@@ -161,7 +250,8 @@ export class TokenBalancesService {
    */
   async exportCsvForYear(year: number): Promise<string> {
     const rows = await this.getAllForYear(year);
-    const header = 'Employee ID,Name,Department,Base Allocation,Boost Tokens,Used,Available';
+    const header =
+      'Employee ID,Name,Department,Base Allocation,Boost Tokens,Used,Available';
     const lines = rows.map((r) =>
       [
         r.employee.employeeId,
