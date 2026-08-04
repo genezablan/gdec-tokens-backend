@@ -223,11 +223,18 @@ export class UsersService {
     }
 
     const users = await qb.getMany();
-    return users.map((u) => ({
+    const briefs = users.map((u) => ({
       id: u.id,
       name: u.fullName,
       avatarUrl: u.profilePicture ?? null,
     }));
+
+    // `profilePicture` holds an S3 object key, and the bucket isn't public — so
+    // it has to be signed before it can be used as an <img> src. Every other
+    // brief-producing path already does this; this one didn't, which is why
+    // @mention suggestions rendered initials instead of photos.
+    await this.s3Service.presignAvatars(briefs);
+    return briefs;
   }
 
   /**
