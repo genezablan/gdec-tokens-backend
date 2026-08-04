@@ -275,7 +275,11 @@ export class CoachingSessionsService {
     return this.sessionRepo.find({
       where: { tokenRequestId: requestId },
       relations: ['coach', 'employee', 'availability'],
-      order: { sessionNumber: 'ASC' },
+      // A number accumulates a row per released attempt, so sessionNumber alone
+      // isn't a total order — without the tiebreaker, rows sharing a number come
+      // back in whatever order Postgres feels like, and the client can't tell
+      // which attempt is the latest.
+      order: { sessionNumber: 'ASC', createdAt: 'ASC' },
     });
   }
 
