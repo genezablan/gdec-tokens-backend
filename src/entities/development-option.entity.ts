@@ -67,9 +67,9 @@ export class DevelopmentOption {
   @JoinColumn({ name: 'updatedById' })
   updatedBy: User;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
 }

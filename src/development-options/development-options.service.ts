@@ -11,6 +11,7 @@ import { DevelopmentOption } from '../entities/development-option.entity';
 import { UpdateDevelopmentOptionDto } from './dto/update-development-option.dto';
 import { DevelopmentOptionType } from '../common/enums';
 import { S3Service } from '../common/services/s3.service';
+import { TokenRequestsService } from '../token-requests/token-requests.service';
 
 @Injectable()
 export class DevelopmentOptionsService implements OnApplicationBootstrap {
@@ -20,6 +21,7 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
     @InjectRepository(DevelopmentOption)
     private readonly developmentOptionRepository: Repository<DevelopmentOption>,
     private readonly s3Service: S3Service,
+    private readonly tokenRequestsService: TokenRequestsService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -73,10 +75,27 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
     updatedById: string,
   ): Promise<DevelopmentOption> {
     const option = await this.findOne(id);
+    const hrApprovalRemoved =
+      option.requiresHrApproval === true && dto.requiresHrApproval === false;
 
     Object.assign(option, dto, { updatedById });
 
-    return this.developmentOptionRepository.save(option);
+    const saved = await this.developmentOptionRepository.save(option);
+
+    // Requests already past the manager's decision are waiting on an HR step
+    // that no longer exists. Nothing else will ever move them, so finalize them
+    // here rather than leaving them stranded in the HR queue.
+    if (hrApprovalRemoved) {
+      const { finalized, skipped } =
+        await this.tokenRequestsService.finalizeRequestsNoLongerAwaitingHr(id);
+      if (finalized || skipped) {
+        this.logger.log(
+          `HR approval removed from "${saved.name}": finalized ${finalized} request(s) awaiting HR, skipped ${skipped}`,
+        );
+      }
+    }
+
+    return saved;
   }
 
   /**

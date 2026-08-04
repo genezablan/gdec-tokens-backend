@@ -157,9 +157,9 @@ export class CoachingSession {
   @Column({ type: 'boolean', default: false })
   outlookCheckFailed: boolean;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
 }

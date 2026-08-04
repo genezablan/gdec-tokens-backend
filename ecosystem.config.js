@@ -1,15 +1,17 @@
-// Note: the deploy workflow reloads with `--update-env` but *without*
-// `--env production`, so PM2 only applies the plain `env` block. Anything that
-// must actually reach the process therefore has to live in `env` — the
-// `env_production` blocks below are kept for manual `pm2 ... --env production`
-// runs, which is why the values are duplicated.
-const env = {
-  // Pin the process clock to the business timezone. The app converts explicitly
-  // (see common/utils/timezone.ts), so this is belt-and-braces — it stops a bare
-  // `new Date('2026-08-10T09:00')` anywhere from silently resolving against the
-  // host's zone, which on these UTC boxes is 8 hours out.
-  TZ: 'Asia/Manila',
-};
+// Deliberately no `TZ` here.
+//
+// Pinning the process to Asia/Manila looked like cheap insurance, but it broke
+// reads: the database session is UTC, and a `timestamp without time zone`
+// column is materialised by node-postgres using the *process's* timezone, so
+// pinning it made every stored timestamp read 8 hours off. Migration
+// 1786100000000 converted those columns to `timestamptz`, and the scheduling
+// code converts explicitly via common/utils/timezone.ts — between them the
+// process timezone is now irrelevant, which is exactly what we want. Leaving
+// the process on the host's UTC keeps it aligned with the database session.
+//
+// Note the deploy reloads with `--update-env` but *without* `--env production`,
+// so only the plain `env` block below reaches the process.
+const env = {};
 
 module.exports = {
   apps: [

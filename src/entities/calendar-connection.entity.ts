@@ -62,9 +62,9 @@ export class CalendarConnection {
   @Column({ type: 'timestamptz', nullable: true })
   connectedAt: Date | null;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
 }

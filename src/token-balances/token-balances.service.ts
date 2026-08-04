@@ -268,13 +268,30 @@ export class TokenBalancesService {
 
   /**
    * Deduct tokens on request approval. Throws if insufficient balance.
+   *
+   * Pass `manager` to run inside a caller-owned transaction, so the status
+   * change and the deduction commit or roll back together — otherwise a request
+   * can end up approved with its tokens never taken. Mirrors `refundTokens`.
    */
   async deductTokens(
     userId: string,
     year: number,
     amount: number,
+    manager?: EntityManager,
   ): Promise<TokenBalanceSummary> {
-    const balance = await this.getOrCreate(userId, year);
+    const repo = manager
+      ? manager.getRepository(TokenBalance)
+      : this.tokenBalanceRepository;
+
+    let balance = manager
+      ? await repo.findOne({
+          where: { userId, year },
+          // Serialize concurrent deductions against the same balance row.
+          lock: { mode: 'pessimistic_write' as const },
+        })
+      : await this.getOrCreate(userId, year);
+    balance ??= await this.getOrCreate(userId, year);
+
     const available = balance.allocated + balance.boostTokens - balance.used;
 
     if (available < amount) {
@@ -284,7 +301,7 @@ export class TokenBalancesService {
     }
 
     balance.used += amount;
-    await this.tokenBalanceRepository.save(balance);
+    await repo.save(balance);
     this.logger.log(
       `Deducted ${amount} token(s) from user ${userId} for year ${year}. Remaining: ${balance.allocated - balance.used}`,
     );

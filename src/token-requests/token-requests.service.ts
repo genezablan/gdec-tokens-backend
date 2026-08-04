@@ -664,6 +664,98 @@ export class TokenRequestsService {
     }).catch(() => {});
   }
 
+  /**
+   * Finalize requests left waiting on HR for an option that no longer requires
+   * it. Manager approval is the last step for such an option, so a request
+   * sitting in MANAGER_APPROVED after the policy flips has nothing left to wait
+   * for — it would otherwise sit in the HR queue forever, under an option the
+   * rules say HR shouldn't be reviewing.
+   *
+   * `managerApprove` already reads `requiresHrApproval` live so a policy change
+   * applies to in-flight requests; this extends that to the ones that were
+   * already past the manager's decision when the policy changed.
+   *
+   * Each request is finalized independently: one that can't be (e.g. the
+   * employee no longer has the balance) is logged and left alone rather than
+   * blocking the rest. Returns how many were finalized.
+   */
+  async finalizeRequestsNoLongerAwaitingHr(
+    developmentOptionId: string,
+  ): Promise<{ finalized: number; skipped: number }> {
+    const stranded = await this.requestRepo.find({
+      where: {
+        developmentOptionId,
+        status: RequestStatus.MANAGER_APPROVED,
+      },
+      relations: ['employee', 'developmentOption'],
+    });
+
+    let finalized = 0;
+    let skipped = 0;
+
+    for (const request of stranded) {
+      try {
+        // The deduction and the status change share a transaction, so this can
+        // never leave a request approved with its tokens untaken.
+        await this.requestRepo.manager.transaction(async (manager) => {
+          await this.tokenBalancesService.deductTokens(
+            request.employeeId,
+            request.year,
+            request.tokenCost,
+            manager,
+          );
+          request.status = RequestStatus.APPROVED;
+          request.slaRemindedAt = null;
+          request.slaEscalatedAt = null;
+          await manager.getRepository(TokenRequest).save(request);
+        });
+
+        this.logger.log(
+          `Request ${request.id} finalized — ${request.developmentOption?.name ?? request.type} no longer requires HR approval`,
+        );
+        finalized++;
+
+        // Notify only after the transaction commits, matching finalizeApproval.
+        try {
+          await this.emailService.sendApprovalNotification({
+            employeeEmail: request.employee.email,
+            employeeName: `${request.employee.firstName} ${request.employee.lastName}`,
+            optionName: request.developmentOption?.name ?? request.type,
+            tokenCost: request.tokenCost,
+            requestId: request.id,
+            type: request.type,
+          });
+        } catch (err: unknown) {
+          this.logger.warn(
+            `Failed to send approval email: ${(err as Error).message}`,
+          );
+        }
+
+        this.notificationsService
+          .create(request.employeeId, {
+            title: DECISION_TITLES.APPROVED_FINAL,
+            message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been fully approved. ${request.tokenCost} token${request.tokenCost !== 1 ? 's' : ''} have been deducted.`,
+            type: NotificationType.SUCCESS,
+            requestId: request.id,
+            metadata: {
+              deeplink:
+                request.type === DevelopmentOptionType.COACHING
+                  ? `/coaching/${request.id}/sessions`
+                  : '/my-request',
+            },
+          })
+          .catch(() => {});
+      } catch (err: unknown) {
+        skipped++;
+        this.logger.warn(
+          `Could not finalize request ${request.id} after HR requirement was removed: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    return { finalized, skipped };
+  }
+
   // ─── Reject ───────────────────────────────────────────────────────────────────
 
   async reject(
