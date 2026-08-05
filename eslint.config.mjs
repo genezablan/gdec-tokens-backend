@@ -32,4 +32,18 @@ export default tseslint.config(
       "prettier/prettier": ["error", { endOfLine: "auto" }],
     },
   },
+  {
+    // Test doubles trip the type-safety rules by their nature: a repository stub
+    // is `any` on purpose, `jest.fn(async v => v)` has nothing to await, and
+    // reading `.mock.calls[0][0]` is untyped by design. Narrowed to these rules
+    // so specs keep the rest of the type checking.
+    files: ['**/*.spec.ts', 'test/**/*.ts'],
+    rules: {
+      '@typescript-eslint/require-await': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/unbound-method': 'off',
+    },
+  },
 );
