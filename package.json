@@ -104,9 +104,43 @@
       "^.+\\.(t|j)s$": "ts-jest"
     },
     "collectCoverageFrom": [
-      "**/*.(t|j)s"
+      "**/*.service.ts",
+      "common/utils/**/*.ts",
+      "!**/*.spec.ts"
     ],
     "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "coverageThreshold": {
+      "global": {
+        "statements": 1,
+        "branches": 1,
+        "functions": 0,
+        "lines": 1
+      },
+      "src/common/utils/timezone.ts": {
+        "statements": 95,
+        "branches": 90,
+        "functions": 95,
+        "lines": 95
+      },
+      "src/token-balances/token-balances.service.ts": {
+        "statements": 50,
+        "branches": 58,
+        "functions": 45,
+        "lines": 50
+      },
+      "src/token-requests/token-requests.service.ts": {
+        "statements": 17,
+        "branches": 11,
+        "functions": 13,
+        "lines": 17
+      },
+      "src/token-requests/coaching-sessions.service.ts": {
+        "statements": 15,
+        "branches": 13,
+        "functions": 10,
+        "lines": 15
+      }
+    }
   }
 }
