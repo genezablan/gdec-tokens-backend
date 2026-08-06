@@ -111,6 +111,40 @@ export class User {
   @Column({ type: 'varchar', nullable: true, length: 50 })
   nickname: string | null;
 
+  // ─── Coach profile ──────────────────────────────────────────────────────────
+  // Populated for users with the `coach` role; null for everyone else.
+
+  @Column({ type: 'varchar', nullable: true, length: 120 })
+  headline: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  bio: string | null;
+
+  @Column({ type: 'text', array: true, nullable: true })
+  specialties: string[] | null;
+
+  @Column({ type: 'int', nullable: true })
+  yearsExperience: number | null;
+
+  /** Max number of coachees this coach will take on per coaching cycle. */
+  @Column({ type: 'int', nullable: true })
+  maxCoachesPerCycle: number | null;
+
+  // ─── Coaching availability (Outlook is the source of truth for free time) ──────
+  // Bookable slots are generated from this window minus the coach's Outlook busy
+  // times. Null until the coach configures their coaching hours.
+
+  /**
+   * Per-day coaching windows, e.g. [{ day: 1, startTime: "09:00", endTime: "12:00" }].
+   * `day` is 0=Sun … 6=Sat. A day may have several non-overlapping windows.
+   */
+  @Column({ type: 'jsonb', nullable: true })
+  coachingWeeklyHours: { day: number; startTime: string; endTime: string }[] | null;
+
+  /** Length of one coaching session in minutes (slot granularity). */
+  @Column({ type: 'int', nullable: true })
+  coachingSessionMinutes: number | null;
+
   @Column({ nullable: true, length: 255 })
   @Exclude()
   passwordResetToken: string;
@@ -119,10 +153,14 @@ export class User {
   @Exclude()
   passwordResetExpiry: Date;
 
-  @CreateDateColumn()
+  /** Timestamp of the user's most recent successful login. Powers engagement analytics. */
+  @Column({ type: 'timestamptz', nullable: true })
+  lastLoginAt: Date | null;
+
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
 
   get fullName(): string {

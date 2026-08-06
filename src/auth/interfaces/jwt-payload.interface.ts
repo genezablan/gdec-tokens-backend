@@ -14,6 +14,8 @@ export interface JwtPayload {
 export interface AuthResponse {
   accessToken: string;
   refreshToken: string;
+  /** id of the LoginEvent row created for this session, used to send heartbeat pings. */
+  loginEventId: string | null;
   user: {
     id: string;
     employeeId: string;

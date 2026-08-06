@@ -4,14 +4,20 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  ConflictException,
+  GoneException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { TokenRequest } from '../entities/token-request.entity';
 import { User } from '../entities/user.entity';
 import { DevelopmentOption } from '../entities/development-option.entity';
+import { CoachingSession } from '../entities/coaching-session.entity';
 import { TokenBalancesService } from '../token-balances/token-balances.service';
-import { EmailService } from '../common/services/email.service';
+import {
+  APPROVAL_UNDO_WINDOW_MS,
+  EmailService,
+} from '../common/services/email.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../entities/notification.entity';
 import { RequestStatus, UserRole, DevelopmentOptionType } from '../common/enums';
@@ -20,6 +26,24 @@ import { CreateCoachingRequestDto } from './dto/create-coaching-request.dto';
 import { CreateLearningSubsidyRequestDto } from './dto/create-learning-subsidy-request.dto';
 import { RejectTokenRequestDto } from './dto/reject-token-request.dto';
 import { ResubmitTokenRequestDto } from './dto/resubmit-token-request.dto';
+
+/**
+ * Bell-entry titles for the outcome of an approve/reject.
+ *
+ * Shared between the code that creates them and the undo path that deletes them —
+ * inline strings on both sides would drift apart the first time someone reworded
+ * one, and the undo would silently stop cleaning up.
+ */
+const DECISION_TITLES = {
+  /** Employee: fully approved, tokens deducted. */
+  APPROVED_FINAL: 'Request Approved! 🎉',
+  /** Employee: first-level approved, now queued for HR. */
+  APPROVED_BY_MANAGER: 'Request Approved by Manager',
+  /** HR: a request has entered their queue. */
+  PENDING_HR: 'Request Pending HR Approval',
+  /** Employee: rejected at either level. */
+  REJECTED: 'Request Not Approved',
+} as const;
 
 @Injectable()
 export class TokenRequestsService {
@@ -46,6 +70,97 @@ export class TokenRequestsService {
     });
     if (!request) throw new NotFoundException(`Token request ${id} not found`);
     return request;
+  }
+
+  /**
+   * Record an approve/reject so it can be reversed within the undo window.
+   * Mutates the request — the caller saves.
+   *
+   * `previousStatus` is the status the request held *before* this decision, which
+   * is where an undo puts it back.
+   */
+  private stampDecision(
+    request: TokenRequest,
+    type: 'manager_approve' | 'hr_approve' | 'manager_reject' | 'hr_reject',
+    actorId: string,
+    previousStatus: RequestStatus,
+  ): void {
+    request.lastDecisionAt = new Date();
+    request.lastDecisionById = actorId;
+    request.lastDecisionType = type;
+    request.previousStatus = previousStatus;
+    request.lastDecisionUndoneAt = null;
+  }
+
+  /** Drop the undo record — the request has moved on by some other route. */
+  private clearDecision(request: TokenRequest): void {
+    request.lastDecisionAt = null;
+    request.lastDecisionById = null;
+    request.lastDecisionType = null;
+    request.previousStatus = null;
+    request.lastDecisionUndoneAt = null;
+  }
+
+  /**
+   * Validate a task-offloading date range. The frontend enforces this too, but
+   * the backend must be authoritative (direct API calls bypass the UI).
+   */
+  private assertValidDateRange(startDate: string, endDate: string): void {
+    if (new Date(endDate) < new Date(startDate)) {
+      throw new BadRequestException('End date cannot be before start date.');
+    }
+  }
+
+  /**
+   * The Task Offloading form allows a project duration of 1–3 months.
+   * Enforce the upper bound here (the UI communicates the range); a shorter
+   * project is left to the approvers' judgment rather than hard-blocked.
+   */
+  private assertProjectDurationWithinLimit(
+    startDate: string,
+    endDate: string,
+  ): void {
+    const limit = new Date(startDate);
+    limit.setMonth(limit.getMonth() + 3);
+    if (new Date(endDate) > limit) {
+      throw new BadRequestException('Project duration cannot exceed 3 months.');
+    }
+  }
+
+  /**
+   * Tokens tied up in requests that are still in the approval pipeline.
+   * Tokens are only deducted at final approval, so the raw balance overstates
+   * what an employee can still spend — every balance check must subtract this.
+   */
+  private async getCommittedTokens(employeeId: string, year: number): Promise<number> {
+    const row = await this.requestRepo
+      .createQueryBuilder('r')
+      .select('COALESCE(SUM(r."tokenCost"), 0)', 'committed')
+      .where('r."employeeId" = :employeeId', { employeeId })
+      .andWhere('r.year = :year', { year })
+      .andWhere('r.status IN (:...statuses)', {
+        statuses: [RequestStatus.PENDING, RequestStatus.MANAGER_APPROVED],
+      })
+      .getRawOne<{ committed: string }>();
+    return Number(row?.committed ?? 0);
+  }
+
+  /** Balance check that counts in-flight requests against the remaining tokens. */
+  private async assertSpendableBalance(
+    employeeId: string,
+    year: number,
+    remaining: number,
+    required: number,
+  ): Promise<void> {
+    const committed = await this.getCommittedTokens(employeeId, year);
+    const spendable = remaining - committed;
+    if (spendable < required) {
+      throw new BadRequestException(
+        committed > 0
+          ? `Insufficient tokens. Required: ${required}, Available: ${remaining}, of which ${committed} already committed to requests awaiting approval.`
+          : `Insufficient tokens. Required: ${required}, Available: ${remaining}`,
+      );
+    }
   }
 
   /**
@@ -193,6 +308,12 @@ export class TokenRequestsService {
     employeeId: string,
     dto: CreateTaskOffloadingRequestDto,
   ): Promise<TokenRequest> {
+    this.assertValidDateRange(dto.formData.startDate, dto.formData.endDate);
+    this.assertProjectDurationWithinLimit(
+      dto.formData.startDate,
+      dto.formData.endDate,
+    );
+
     const { employee, option, year, balance, manager } = await this.prepareRequest(
       employeeId,
       dto.developmentOptionId,
@@ -215,11 +336,24 @@ export class TokenRequestsService {
       );
     }
 
-    if (balance.remaining < option.tokenCost) {
+    // One OTJ/special project per year — includes requests still in the pipeline.
+    const existingThisYear = await this.requestRepo.findOne({
+      where: {
+        employeeId,
+        type: DevelopmentOptionType.TASK_OFFLOADING,
+        status: In([RequestStatus.PENDING, RequestStatus.MANAGER_APPROVED, RequestStatus.APPROVED]),
+        year,
+      },
+    });
+    if (existingThisYear) {
       throw new BadRequestException(
-        `Insufficient tokens. Required: ${option.tokenCost}, Available: ${balance.remaining}`,
+        existingThisYear.status === RequestStatus.APPROVED
+          ? 'Task Offloading is limited to one project per year — you already have an approved request this year.'
+          : 'You already have a Task Offloading request awaiting approval this year.',
       );
     }
+
+    await this.assertSpendableBalance(employeeId, year, balance.remaining, option.tokenCost);
 
     return this.saveAndNotify({
       employeeId,
@@ -230,7 +364,7 @@ export class TokenRequestsService {
       managerId: manager.id,
       employee,
       manager,
-      formData: {},
+      formData: { ...dto.formData },
       attachmentUrl: dto.attachmentUrl,
     });
   }
@@ -269,11 +403,21 @@ export class TokenRequestsService {
       throw new BadRequestException('You cannot nominate yourself as your coach');
     }
 
-    if (balance.remaining < option.tokenCost) {
+    // One coaching cycle in the pipeline at a time.
+    const inFlightCoaching = await this.requestRepo.findOne({
+      where: {
+        employeeId,
+        type: DevelopmentOptionType.COACHING,
+        status: In([RequestStatus.PENDING, RequestStatus.MANAGER_APPROVED]),
+      },
+    });
+    if (inFlightCoaching) {
       throw new BadRequestException(
-        `Insufficient tokens. Required: ${option.tokenCost}, Available: ${balance.remaining}`,
+        'You already have a coaching request awaiting approval. Wait for it to be decided (or cancel it) before submitting another.',
       );
     }
+
+    await this.assertSpendableBalance(employeeId, year, balance.remaining, option.tokenCost);
 
     // Use coach as the first-level approver (managerId = coach.id).
     // snapshotManagerName captures the coach's name as the first approver.
@@ -290,6 +434,12 @@ export class TokenRequestsService {
         coachId: dto.coachId,
         coachName: `${coach.firstName} ${coach.lastName}`,
         notes: dto.notes ?? null,
+        focusArea: dto.formData.focusArea,
+        developmentObjective: dto.formData.developmentObjective,
+        keyChallenges: dto.formData.keyChallenges ?? null,
+        expectedOutcomes: dto.formData.expectedOutcomes ?? null,
+        preferredSchedule: dto.formData.preferredSchedule,
+        sameCoachAcknowledged: dto.formData.sameCoachAcknowledged,
       },
       attachmentUrl: dto.attachmentUrl,
     });
@@ -303,6 +453,15 @@ export class TokenRequestsService {
     employeeId: string,
     dto: CreateLearningSubsidyRequestDto,
   ): Promise<TokenRequest> {
+    this.assertValidDateRange(dto.formData.startDate, dto.formData.endDate);
+
+    // The form asks for the actual value: the request can't exceed the cost.
+    if (dto.subsidyAmount > dto.formData.totalCost) {
+      throw new BadRequestException(
+        `Subsidy amount ₱${dto.subsidyAmount.toLocaleString()} cannot exceed the total training cost of ₱${dto.formData.totalCost.toLocaleString()}`,
+      );
+    }
+
     const { employee, option, year, balance, manager } = await this.prepareRequest(
       employeeId,
       dto.developmentOptionId,
@@ -320,11 +479,7 @@ export class TokenRequestsService {
         `Subsidy amount ₱${dto.subsidyAmount} exceeds the maximum of ₱${maxTokens * subsidyPerToken}`,
       );
     }
-    if (balance.remaining < tokenCost) {
-      throw new BadRequestException(
-        `Insufficient tokens. Required: ${tokenCost}, Available: ${balance.remaining}`,
-      );
-    }
+    await this.assertSpendableBalance(employeeId, year, balance.remaining, tokenCost);
 
     return this.saveAndNotify({
       employeeId,
@@ -340,6 +495,16 @@ export class TokenRequestsService {
         provider: dto.provider,
         subsidyAmount: dto.subsidyAmount,
         tokenCost,
+        startDate: dto.formData.startDate,
+        endDate: dto.formData.endDate,
+        modeOfTraining: dto.formData.modeOfTraining,
+        totalCost: dto.formData.totalCost,
+        learningDescription: dto.formData.learningDescription,
+        businessAlignment: dto.formData.businessAlignment,
+        applicationPlan: dto.formData.applicationPlan,
+        duringWorkHours: dto.formData.duringWorkHours,
+        onePerTeamAcknowledged: dto.formData.onePerTeamAcknowledged,
+        reimbursementType: dto.formData.reimbursementType,
       },
       attachmentUrl: dto.attachmentUrl,
     });
@@ -357,8 +522,34 @@ export class TokenRequestsService {
       throw new ForbiddenException('You are not the assigned manager for this request');
     }
 
-    request.status = RequestStatus.MANAGER_APPROVED;
     request.managerApprovedAt = new Date();
+    this.stampDecision(
+      request,
+      'manager_approve',
+      approverId,
+      RequestStatus.PENDING,
+    );
+
+    // Options configured without HR review finalize at first-level approval.
+    // The flag is read live (not snapshotted) so a policy change applies to
+    // requests already in flight.
+    if (request.developmentOption && !request.developmentOption.requiresHrApproval) {
+      request.status = RequestStatus.APPROVED;
+      // Fresh stage ⇒ fresh SLA clock (no next stage here, but keep rows clean).
+      request.slaRemindedAt = null;
+      request.slaEscalatedAt = null;
+      await this.requestRepo.save(request);
+      this.logger.log(
+        `Request ${requestId} approved at first level by ${approverId} (option does not require HR approval)`,
+      );
+      await this.finalizeApproval(request);
+      return this.findRequest(requestId);
+    }
+
+    request.status = RequestStatus.MANAGER_APPROVED;
+    // The request enters a new queue — restart SLA tracking for the HR stage.
+    request.slaRemindedAt = null;
+    request.slaEscalatedAt = null;
     await this.requestRepo.save(request);
     this.logger.log(`Request ${requestId} manager-approved by ${approverId}`);
 
@@ -391,7 +582,7 @@ export class TokenRequestsService {
 
       // ── In-app: notify HR ──
       this.notificationsService.create(hrUser.id, {
-        title: 'Request Pending HR Approval',
+        title: DECISION_TITLES.PENDING_HR,
         message: `${request.employee.firstName} ${request.employee.lastName}'s ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been approved by the ${request.type === DevelopmentOptionType.COACHING ? 'coach' : 'manager'} and needs your review.`,
         type: NotificationType.INFO,
         requestId: request.id,
@@ -401,7 +592,7 @@ export class TokenRequestsService {
 
     // ── In-app: notify employee that manager approved ──
     this.notificationsService.create(request.employeeId, {
-      title: 'Request Approved by Manager',
+      title: DECISION_TITLES.APPROVED_BY_MANAGER,
       message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been approved by your ${request.type === DevelopmentOptionType.COACHING ? 'coach' : 'manager'} and is now pending HR review.`,
       type: NotificationType.INFO,
       requestId: request.id,
@@ -425,13 +616,28 @@ export class TokenRequestsService {
     request.status = RequestStatus.APPROVED;
     request.hrId = hrUserId;
     request.hrApprovedAt = new Date();
+    this.stampDecision(
+      request,
+      'hr_approve',
+      hrUserId,
+      RequestStatus.MANAGER_APPROVED,
+    );
     await this.requestRepo.save(request);
     this.logger.log(`Request ${requestId} HR-approved by ${hrUserId}`);
 
-    // ── Deduct tokens ──
+    await this.finalizeApproval(request);
+
+    return this.findRequest(requestId);
+  }
+
+  /**
+   * Shared tail of a final approval — whichever level finalized it (HR, or the
+   * manager/coach when the option skips HR review): deduct tokens and tell the
+   * employee. The request must already be saved with status APPROVED.
+   */
+  private async finalizeApproval(request: TokenRequest): Promise<void> {
     await this.tokenBalancesService.deductTokens(request.employeeId, request.year, request.tokenCost);
 
-    // ── Notify employee ──
     try {
       await this.emailService.sendApprovalNotification({
         employeeEmail: request.employee.email,
@@ -445,9 +651,8 @@ export class TokenRequestsService {
       this.logger.warn(`Failed to send approval email: ${(err as Error).message}`);
     }
 
-    // ── In-app: notify employee final approval ──
     this.notificationsService.create(request.employeeId, {
-      title: 'Request Approved! 🎉',
+      title: DECISION_TITLES.APPROVED_FINAL,
       message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been fully approved. ${request.tokenCost} token${request.tokenCost !== 1 ? 's' : ''} have been deducted.`,
       type: NotificationType.SUCCESS,
       requestId: request.id,
@@ -457,8 +662,98 @@ export class TokenRequestsService {
           : '/my-request',
       },
     }).catch(() => {});
+  }
 
-    return this.findRequest(requestId);
+  /**
+   * Finalize requests left waiting on HR for an option that no longer requires
+   * it. Manager approval is the last step for such an option, so a request
+   * sitting in MANAGER_APPROVED after the policy flips has nothing left to wait
+   * for — it would otherwise sit in the HR queue forever, under an option the
+   * rules say HR shouldn't be reviewing.
+   *
+   * `managerApprove` already reads `requiresHrApproval` live so a policy change
+   * applies to in-flight requests; this extends that to the ones that were
+   * already past the manager's decision when the policy changed.
+   *
+   * Each request is finalized independently: one that can't be (e.g. the
+   * employee no longer has the balance) is logged and left alone rather than
+   * blocking the rest. Returns how many were finalized.
+   */
+  async finalizeRequestsNoLongerAwaitingHr(
+    developmentOptionId: string,
+  ): Promise<{ finalized: number; skipped: number }> {
+    const stranded = await this.requestRepo.find({
+      where: {
+        developmentOptionId,
+        status: RequestStatus.MANAGER_APPROVED,
+      },
+      relations: ['employee', 'developmentOption'],
+    });
+
+    let finalized = 0;
+    let skipped = 0;
+
+    for (const request of stranded) {
+      try {
+        // The deduction and the status change share a transaction, so this can
+        // never leave a request approved with its tokens untaken.
+        await this.requestRepo.manager.transaction(async (manager) => {
+          await this.tokenBalancesService.deductTokens(
+            request.employeeId,
+            request.year,
+            request.tokenCost,
+            manager,
+          );
+          request.status = RequestStatus.APPROVED;
+          request.slaRemindedAt = null;
+          request.slaEscalatedAt = null;
+          await manager.getRepository(TokenRequest).save(request);
+        });
+
+        this.logger.log(
+          `Request ${request.id} finalized — ${request.developmentOption?.name ?? request.type} no longer requires HR approval`,
+        );
+        finalized++;
+
+        // Notify only after the transaction commits, matching finalizeApproval.
+        try {
+          await this.emailService.sendApprovalNotification({
+            employeeEmail: request.employee.email,
+            employeeName: `${request.employee.firstName} ${request.employee.lastName}`,
+            optionName: request.developmentOption?.name ?? request.type,
+            tokenCost: request.tokenCost,
+            requestId: request.id,
+            type: request.type,
+          });
+        } catch (err: unknown) {
+          this.logger.warn(
+            `Failed to send approval email: ${(err as Error).message}`,
+          );
+        }
+
+        this.notificationsService
+          .create(request.employeeId, {
+            title: DECISION_TITLES.APPROVED_FINAL,
+            message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request has been fully approved. ${request.tokenCost} token${request.tokenCost !== 1 ? 's' : ''} have been deducted.`,
+            type: NotificationType.SUCCESS,
+            requestId: request.id,
+            metadata: {
+              deeplink:
+                request.type === DevelopmentOptionType.COACHING
+                  ? `/coaching/${request.id}/sessions`
+                  : '/my-request',
+            },
+          })
+          .catch(() => {});
+      } catch (err: unknown) {
+        skipped++;
+        this.logger.warn(
+          `Could not finalize request ${request.id} after HR requirement was removed: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    return { finalized, skipped };
   }
 
   // ─── Reject ───────────────────────────────────────────────────────────────────
@@ -486,11 +781,22 @@ export class TokenRequestsService {
       throw new ForbiddenException('You are not the assigned manager for this request');
     }
 
+    // Captured before the overwrite — an HR rejection can arrive from either
+    // `pending` or `manager_approved`, so this is the only record of where an
+    // undo should put the request back.
+    const statusBeforeRejection = request.status;
+
     request.status = RequestStatus.REJECTED;
     request.rejectedById = rejectorId;
     request.rejectedByLevel = level;
     request.rejectionComment = dto.comment;
     request.rejectedAt = new Date();
+    this.stampDecision(
+      request,
+      level === 'manager' ? 'manager_reject' : 'hr_reject',
+      rejectorId,
+      statusBeforeRejection,
+    );
     await this.requestRepo.save(request);
     this.logger.log(`Request ${requestId} rejected by ${rejectorId} (${level})`);
 
@@ -508,7 +814,7 @@ export class TokenRequestsService {
 
     // ── In-app: notify employee rejection ──
     this.notificationsService.create(request.employeeId, {
-      title: 'Request Not Approved',
+      title: DECISION_TITLES.REJECTED,
       message: `Your ${(request.developmentOption?.name ?? request.type).replace(/_/g, ' ')} request was not approved. Reason: ${dto.comment}`,
       type: NotificationType.ERROR,
       requestId: request.id,
@@ -518,26 +824,428 @@ export class TokenRequestsService {
     return this.findRequest(requestId);
   }
 
+  // ─── Undo a decision ──────────────────────────────────────────────────────────
+
+  /**
+   * The status each decision type produces. An undo is only valid while the
+   * request is still sitting in that status — if it has moved on, something
+   * downstream has already acted on the decision and reversing it would corrupt
+   * that work.
+   */
+  private static readonly DECISION_RESULT_STATUS: Record<
+    string,
+    RequestStatus[]
+  > = {
+    // A manager approval lands on MANAGER_APPROVED, or APPROVED when the option
+    // skips HR review.
+    manager_approve: [RequestStatus.MANAGER_APPROVED, RequestStatus.APPROVED],
+    hr_approve: [RequestStatus.APPROVED],
+    manager_reject: [RequestStatus.REJECTED],
+    hr_reject: [RequestStatus.REJECTED],
+  };
+
+  /**
+   * PATCH /token-requests/:id/undo-decision
+   * Reverse the approve/reject recorded on this request, restoring the status it
+   * held beforehand and refunding any tokens the decision deducted.
+   *
+   * Only the approver who made the decision — or an admin — may undo it, and only
+   * within APPROVAL_UNDO_WINDOW_MS. The window is a ceiling, not a guarantee: an
+   * undo also dies the moment anything downstream acts on the decision (HR
+   * approves, the employee resubmits or cancels, a coaching session is booked).
+   *
+   * The status flip and the token refund share one transaction, so a request can
+   * never end up reverted with its tokens still spent.
+   */
+  async undoDecision(requestId: string, actor: User): Promise<TokenRequest> {
+    const isAdmin = actor.roles.includes(UserRole.ADMIN);
+
+    // Captured for the post-commit notifications.
+    let refunded = 0;
+    let restoredStatus: RequestStatus;
+    let decisionType: string;
+
+    await this.requestRepo.manager.transaction(async (manager) => {
+      // Lock the row first: without this, two undos (or an undo racing an HR
+      // approval) could both pass the guards below on stale reads.
+      //
+      // No `relations` here on purpose — TypeORM emits relations as LEFT JOINs,
+      // and Postgres rejects FOR UPDATE against the nullable side of an outer
+      // join. Nothing below needs them; the notification step re-reads the
+      // request with its relations after the transaction commits.
+      const request = await manager.findOne(TokenRequest, {
+        where: { id: requestId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!request)
+        throw new NotFoundException(`Token request ${requestId} not found`);
+
+      // ── Guard 1: a decision exists and is still inside the window ──
+      if (!request.lastDecisionAt || !request.lastDecisionType) {
+        throw new BadRequestException('This request has no decision to undo');
+      }
+      // Elapsed time is computed here rather than in SQL on purpose: the app and
+      // the database can disagree about the current time, and the decision
+      // timestamp was written by the app.
+      const elapsed = Date.now() - new Date(request.lastDecisionAt).getTime();
+      if (elapsed > APPROVAL_UNDO_WINDOW_MS) {
+        throw new GoneException(
+          'The time window for undoing this decision has passed',
+        );
+      }
+
+      // ── Guard 2: not already undone ──
+      if (request.lastDecisionUndoneAt) {
+        throw new ConflictException('This decision has already been undone');
+      }
+
+      // ── Guard 3: nothing downstream has moved the request on ──
+      const expected =
+        TokenRequestsService.DECISION_RESULT_STATUS[request.lastDecisionType] ??
+        [];
+      if (!expected.includes(request.status)) {
+        throw new ConflictException(
+          `This decision can no longer be undone — the request has since moved to "${request.status}"`,
+        );
+      }
+
+      // ── Guard 4: only the decider, or an admin ──
+      if (!isAdmin && request.lastDecisionById !== actor.id) {
+        throw new ForbiddenException(
+          'Only the approver who made this decision can undo it',
+        );
+      }
+
+      // ── Guard 5: no coaching sessions booked against the approval ──
+      // Reverting an approved coaching request out from under a booked session
+      // would leave the session pointing at a request that isn't approved.
+      if (
+        request.status === RequestStatus.APPROVED &&
+        request.type === DevelopmentOptionType.COACHING
+      ) {
+        const sessions = await manager.count(CoachingSession, {
+          where: { tokenRequestId: request.id },
+        });
+        if (sessions > 0) {
+          throw new ConflictException(
+            'This approval can no longer be undone — coaching sessions have already been booked',
+          );
+        }
+      }
+
+      if (!request.previousStatus) {
+        // Only reachable for rows stamped before this column existed.
+        throw new BadRequestException(
+          'This decision predates undo support and cannot be reversed',
+        );
+      }
+
+      decisionType = request.lastDecisionType;
+
+      // ── Refund, if this decision was the one that spent the tokens ──
+      // Rejections never deduct, and a manager approval that only queued the
+      // request for HR hasn't deducted yet either.
+      if (request.status === RequestStatus.APPROVED) {
+        await this.tokenBalancesService.refundTokens(
+          request.employeeId,
+          request.year,
+          request.tokenCost,
+          manager,
+        );
+        refunded = request.tokenCost;
+      }
+
+      // ── Reverse the decision's own field writes ──
+      switch (decisionType) {
+        case 'manager_approve':
+          request.managerApprovedAt = null as any;
+          break;
+        case 'hr_approve':
+          request.hrId = null as any;
+          request.hrApprovedAt = null as any;
+          break;
+        case 'manager_reject':
+        case 'hr_reject':
+          request.rejectedById = null as any;
+          request.rejectedByLevel = null as any;
+          request.rejectionComment = null as any;
+          request.rejectedAt = null as any;
+          break;
+      }
+
+      request.status = request.previousStatus;
+      restoredStatus = request.status;
+
+      // The request is live again at an earlier stage — restart that stage's SLA
+      // clock so it isn't instantly treated as overdue or already escalated.
+      request.slaRemindedAt = null;
+      request.slaEscalatedAt = null;
+
+      // Keep the decision record but mark it spent, so the same decision can't be
+      // undone twice while the history of who did what stays readable.
+      request.lastDecisionUndoneAt = new Date();
+
+      await manager.save(TokenRequest, request);
+    });
+
+    this.logger.log(
+      `Request ${requestId} decision (${decisionType!}) undone by ${actor.id}` +
+        `${refunded > 0 ? `, refunded ${refunded} token(s)` : ''}` +
+        ` → ${restoredStatus!}`,
+    );
+
+    const request = await this.findRequest(requestId);
+    await this.notifyDecisionReversed(request, actor, {
+      decisionType: decisionType!,
+      refunded,
+    });
+
+    return request;
+  }
+
+  /**
+   * Tell everyone who was told about the original decision that it no longer
+   * stands, and clear the now-wrong bell entries that decision produced.
+   *
+   * Best-effort throughout: the reversal is already committed, so a failed email
+   * must never surface as a failed undo.
+   */
+  private async notifyDecisionReversed(
+    request: TokenRequest,
+    actor: User,
+    opts: { decisionType: string; refunded: number },
+  ): Promise<void> {
+    const { decisionType, refunded } = opts;
+    const optionName = request.developmentOption?.name ?? request.type;
+    const optionLabel = optionName.replace(/_/g, ' ');
+    const wasApproval = decisionType.endsWith('_approve');
+
+    // HR only needs telling if the request was in (or has returned to) their queue.
+    const hrWasInvolved =
+      decisionType === 'manager_approve' || decisionType === 'hr_reject';
+    const hrUsers = hrWasInvolved
+      ? await this.userRepo
+          .createQueryBuilder('user')
+          .where(':role = ANY(user.roles)', { role: UserRole.HR_APPROVER })
+          .andWhere('user.isActive = true')
+          .getMany()
+      : [];
+
+    // ── Drop the stale bell entries the reversed decision created ──
+    // Targeted at the specific outcome titles rather than everything on the
+    // request, so the submission/earlier history survives.
+    try {
+      await this.notificationsService.deleteForRequestByTitles(
+        request.id,
+        [request.employeeId],
+        wasApproval
+          ? [
+              DECISION_TITLES.APPROVED_FINAL,
+              DECISION_TITLES.APPROVED_BY_MANAGER,
+            ]
+          : [DECISION_TITLES.REJECTED],
+      );
+      // A manager approval that queued the request for HR also put an entry in
+      // every HR approver's bell; undoing it takes the request back out.
+      if (decisionType === 'manager_approve' && hrUsers.length > 0) {
+        await this.notificationsService.deleteForRequestByTitles(
+          request.id,
+          hrUsers.map((u) => u.id),
+          [DECISION_TITLES.PENDING_HR],
+        );
+      }
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Failed to clear stale notifications for ${request.id}: ${(err as Error).message}`,
+      );
+    }
+
+    const actorRole = this.describeActorRole(request, actor, decisionType);
+    const stageLabel =
+      request.status === RequestStatus.MANAGER_APPROVED
+        ? 'Awaiting HR review'
+        : 'Awaiting review';
+
+    // ── Employee: email + bell ──
+    try {
+      await this.emailService.sendDecisionReversedNotification({
+        employeeEmail: request.employee.email,
+        employeeName: `${request.employee.firstName} ${request.employee.lastName}`,
+        optionName,
+        reversed: wasApproval ? 'approval' : 'rejection',
+        stageLabel,
+        tokensRefunded: refunded,
+        actorRole,
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Failed to send decision-reversed email: ${(err as Error).message}`,
+      );
+    }
+
+    this.notificationsService
+      .create(request.employeeId, {
+        title: wasApproval ? 'Approval Withdrawn' : 'Rejection Withdrawn',
+        message: wasApproval
+          ? `The approval of your ${optionLabel} request was withdrawn by your ${actorRole} and it is back under review.${refunded > 0 ? ` ${refunded} token${refunded !== 1 ? 's' : ''} returned to your balance.` : ''}`
+          : `Your ${optionLabel} request was not rejected after all — your ${actorRole} withdrew that decision and it is back under review.`,
+        type: NotificationType.WARNING,
+        requestId: request.id,
+        metadata: { deeplink: '/my-request' },
+      })
+      .catch(() => {});
+
+    // ── HR: the request has left, or re-entered, their queue ──
+    for (const hrUser of hrUsers) {
+      const returned = request.status === RequestStatus.MANAGER_APPROVED;
+      this.notificationsService
+        .create(hrUser.id, {
+          title: returned
+            ? 'Request Back in Your Queue'
+            : 'Request Withdrawn from Your Queue',
+          message: returned
+            ? `${request.employee.firstName} ${request.employee.lastName}'s ${optionLabel} request is awaiting your review again — the earlier decision was undone.`
+            : `${request.employee.firstName} ${request.employee.lastName}'s ${optionLabel} request no longer needs your review — the ${actorRole} undid their approval.`,
+          type: NotificationType.INFO,
+          requestId: request.id,
+          metadata: { deeplink: '/approval' },
+        })
+        .catch(() => {});
+    }
+  }
+
+  /** How the employee should hear the reverser described. */
+  private describeActorRole(
+    request: TokenRequest,
+    actor: User,
+    decisionType: string,
+  ): 'manager' | 'coach' | 'HR' | 'administrator' {
+    if (decisionType.startsWith('hr_')) return 'HR';
+    if (request.type === DevelopmentOptionType.COACHING) return 'coach';
+    // An admin acting on someone else's decision shouldn't be reported as the
+    // employee's manager.
+    if (
+      actor.id !== request.managerId &&
+      actor.roles.includes(UserRole.ADMIN)
+    ) {
+      return 'administrator';
+    }
+    return 'manager';
+  }
+
   // ─── Cancel ───────────────────────────────────────────────────────────────────
 
+  /**
+   * PATCH /token-requests/:id/cancel
+   * Employee withdraws their own request. Allowed while the request is still
+   * `pending` and also once it is `manager_approved` — up to that point no
+   * tokens have been deducted, so cancelling is a pure state change.
+   *
+   * A `manager_approved` request is already in someone's queue, so the approvers
+   * are notified *before* the status flips: the manager who approved it, and
+   * every active HR approver who would otherwise be reviewing it. A `pending`
+   * request has only reached the manager, so only the manager is told.
+   *
+   * Once the request is fully `approved` the tokens are gone and cancelling
+   * would need a refund path — still blocked here.
+   */
   async cancel(requestId: string, employeeId: string): Promise<TokenRequest> {
     const request = await this.findRequest(requestId);
 
     if (request.employeeId !== employeeId) {
       throw new ForbiddenException('You can only cancel your own requests');
     }
-    if (request.status !== RequestStatus.PENDING) {
+
+    const cancellableStatuses = [
+      RequestStatus.PENDING,
+      RequestStatus.MANAGER_APPROVED,
+    ];
+    if (!cancellableStatuses.includes(request.status)) {
       throw new BadRequestException(
-        `Only pending requests can be cancelled (current: ${request.status})`,
+        `Only pending or manager-approved requests can be cancelled (current: ${request.status})`,
       );
     }
 
+    const wasManagerApproved =
+      request.status === RequestStatus.MANAGER_APPROVED;
+
+    // ── Notify the approvers first, before the request leaves their queue ──
+    await this.notifyApproversOfCancellation(request, wasManagerApproved);
+
     request.status = RequestStatus.CANCELLED;
     request.cancelledAt = new Date();
+    // Withdrawn by the employee — any pending approver undo is moot.
+    this.clearDecision(request);
     await this.requestRepo.save(request);
-    this.logger.log(`Request ${requestId} cancelled by employee ${employeeId}`);
+    this.logger.log(
+      `Request ${requestId} cancelled by employee ${employeeId} (was: ${wasManagerApproved ? 'manager_approved' : 'pending'})`,
+    );
 
     return this.findRequest(requestId);
+  }
+
+  /**
+   * Tells the manager — and, once HR has it queued, every active HR approver —
+   * that an employee withdrew a request they were reviewing.
+   * Best-effort: a failed email or notification never blocks the cancellation.
+   */
+  private async notifyApproversOfCancellation(
+    request: TokenRequest,
+    wasManagerApproved: boolean,
+  ): Promise<void> {
+    const employeeName = `${request.employee.firstName} ${request.employee.lastName}`;
+    const optionName = request.developmentOption?.name ?? request.type;
+    const optionLabel = optionName.replace(/_/g, ' ');
+    // Coaching requests are first-level approved by the coach, not the manager.
+    const approverRole =
+      request.type === DevelopmentOptionType.COACHING ? 'coach' : 'manager';
+
+    const recipients: User[] = [];
+
+    // findRequest() eager-loads the manager relation.
+    if (request.manager) recipients.push(request.manager);
+
+    // Once manager-approved the request sits in HR's queue too, so HR needs to
+    // know it's gone.
+    if (wasManagerApproved) {
+      const hrUsers = await this.userRepo
+        .createQueryBuilder('user')
+        .where(':role = ANY(user.roles)', { role: UserRole.HR_APPROVER })
+        .andWhere('user.isActive = true')
+        .getMany();
+      recipients.push(...hrUsers);
+    }
+
+    // The manager may also hold the HR role — don't notify them twice.
+    const unique = new Map(recipients.map((r) => [r.id, r]));
+
+    for (const recipient of unique.values()) {
+      try {
+        await this.emailService.sendRequestCancelledNotification({
+          approverEmail: recipient.email,
+          approverName: `${recipient.firstName} ${recipient.lastName}`,
+          employeeName,
+          optionName,
+          tokenCost: request.tokenCost,
+          wasManagerApproved,
+          approverRole,
+        });
+      } catch (err: unknown) {
+        this.logger.warn(
+          `Failed to send cancellation email to ${recipient.email}: ${(err as Error).message}`,
+        );
+      }
+
+      this.notificationsService
+        .create(recipient.id, {
+          title: 'Request Cancelled',
+          message: `${employeeName} cancelled their ${optionLabel} request${wasManagerApproved ? ` after ${approverRole} approval` : ''}. No action is needed.`,
+          type: NotificationType.WARNING,
+          requestId: request.id,
+          metadata: { deeplink: '/approval' },
+        })
+        .catch(() => {});
+    }
   }
   // ─── Resubmit ─────────────────────────────────────────────────────────────────────────
 
@@ -562,11 +1270,48 @@ export class TokenRequestsService {
       );
     }
 
+    // Copy every defined DTO key from `keys` into `formData` — the resubmit
+    // merge is "only what was sent changes".
+    const mergeKeys = (
+      formData: Record<string, unknown>,
+      keys: (keyof ResubmitTokenRequestDto)[],
+    ) => {
+      for (const key of keys) {
+        if (dto[key] !== undefined) formData[key] = dto[key];
+      }
+    };
+
     // ── Merge updated fields into formData per type ──
     if (request.type === DevelopmentOptionType.TASK_OFFLOADING) {
-      if (dto.attachmentUrl) {
-        request.attachmentUrl = dto.attachmentUrl;
-      }
+      const formData = { ...(request.formData as Record<string, unknown>) };
+      mergeKeys(formData, [
+        'projectTitle',
+        'requestSubject',
+        'startDate',
+        'endDate',
+        'reason',
+        'projectDescription',
+        'scopeOfWork',
+        'successMetrics',
+        'expectedDeliverables',
+        'businessAlignment',
+        'developmentGoals',
+        'taskToOffload',
+        'colleagueName',
+      ]);
+
+      // Validate the effective range (merging any unchanged dates from the original).
+      this.assertValidDateRange(
+        formData.startDate as string,
+        formData.endDate as string,
+      );
+      this.assertProjectDurationWithinLimit(
+        formData.startDate as string,
+        formData.endDate as string,
+      );
+
+      if (dto.attachmentUrl) request.attachmentUrl = dto.attachmentUrl;
+      request.formData = formData;
     } else if (request.type === DevelopmentOptionType.COACHING) {
       const formData = { ...(request.formData as Record<string, unknown>) };
       if (dto.coachId) {
@@ -581,7 +1326,14 @@ export class TokenRequestsService {
         formData.coachId = coach.id;
         formData.coachName = `${coach.firstName} ${coach.lastName}`;
       }
-      if (dto.notes !== undefined) formData.notes = dto.notes;
+      mergeKeys(formData, [
+        'notes',
+        'focusArea',
+        'developmentObjective',
+        'keyChallenges',
+        'expectedOutcomes',
+        'preferredSchedule',
+      ]);
       if (dto.attachmentUrl) request.attachmentUrl = dto.attachmentUrl;
       request.formData = formData;
     } else if (request.type === DevelopmentOptionType.LEARNING_SUBSIDY) {
@@ -608,8 +1360,39 @@ export class TokenRequestsService {
         formData.tokenCost = newTokenCost;
         request.tokenCost = newTokenCost;
       }
-      if (dto.courseName !== undefined) formData.courseName = dto.courseName;
-      if (dto.provider !== undefined) formData.provider = dto.provider;
+      mergeKeys(formData, [
+        'courseName',
+        'provider',
+        'startDate',
+        'endDate',
+        'modeOfTraining',
+        'totalCost',
+        'learningDescription',
+        'businessAlignment',
+        'applicationPlan',
+        'duringWorkHours',
+        'reimbursementType',
+      ]);
+
+      // Re-validate the effective date range and cost/amount relationship.
+      if (formData.startDate && formData.endDate) {
+        this.assertValidDateRange(
+          formData.startDate as string,
+          formData.endDate as string,
+        );
+      }
+      const effectiveAmount = formData.subsidyAmount as number | undefined;
+      const effectiveTotal = formData.totalCost as number | undefined;
+      if (
+        effectiveAmount != null &&
+        effectiveTotal != null &&
+        effectiveAmount > effectiveTotal
+      ) {
+        throw new BadRequestException(
+          `Subsidy amount ₱${effectiveAmount.toLocaleString()} cannot exceed the total training cost of ₱${effectiveTotal.toLocaleString()}`,
+        );
+      }
+
       if (dto.attachmentUrl) request.attachmentUrl = dto.attachmentUrl;
       request.formData = formData;
     }
@@ -620,6 +1403,14 @@ export class TokenRequestsService {
     request.rejectedByLevel = null as any;
     request.rejectionComment = null as any;
     request.rejectedAt = null as any;
+    // Back at the start of the pipeline — the SLA clock starts over.
+    request.slaRemindedAt = null;
+    request.slaEscalatedAt = null;
+    request.managerApprovedAt = null as any;
+    // The rejection this resubmit answers is no longer reversible — the employee
+    // has already moved the request on. (The status guard in undoDecision would
+    // catch this anyway; clearing keeps the row honest.)
+    this.clearDecision(request);
 
     await this.requestRepo.save(request);
     this.logger.log(`Request ${requestId} resubmitted by employee ${employeeId}`);

@@ -60,6 +60,25 @@ export class NotificationsService {
     );
   }
 
+  // ─── Ephemeral push (no persistence) ─────────────────────────────────────────
+
+  /**
+   * Push a live event to a user's open SSE connections WITHOUT persisting a
+   * notification. Used for real-time UI updates (new post / comment / reaction)
+   * that should not become bell entries. No-op if the user isn't connected.
+   */
+  pushEvent(userId: string, data: Record<string, unknown>): void {
+    const set = this.streams.get(userId);
+    if (!set) return;
+    const event = { data } as MessageEvent;
+    set.forEach((subject) => subject.next(event));
+  }
+
+  /** Push the same live event to many users (deduplicated). */
+  pushEventToMany(userIds: string[], data: Record<string, unknown>): void {
+    for (const userId of new Set(userIds)) this.pushEvent(userId, data);
+  }
+
   // ─── Create ─────────────────────────────────────────────────────────────────
 
   async create(userId: string, dto: CreateNotificationDto): Promise<Notification> {
@@ -124,5 +143,36 @@ export class NotificationsService {
 
   async remove(notificationId: string, userId: string): Promise<void> {
     await this.repo.delete({ id: notificationId, userId });
+  }
+
+  /**
+   * Delete the notifications a since-reversed action generated, so the bell
+   * doesn't keep showing an outcome that no longer holds (e.g. "Request
+   * Approved 🎉" after the approver undid the approval).
+   *
+   * Matched by title rather than by a `createdAt` cutoff on purpose: `createdAt`
+   * is written by the database (`@CreateDateColumn`) while the decision timestamp
+   * it would be compared against is written by the application, so any clock
+   * drift between the two silently matches nothing. Callers pass the titles from
+   * shared constants, so the create and delete sides can't drift apart.
+   *
+   * Returns the number deleted.
+   */
+  async deleteForRequestByTitles(
+    requestId: string,
+    userIds: string[],
+    titles: string[],
+  ): Promise<number> {
+    if (userIds.length === 0 || titles.length === 0) return 0;
+
+    const result = await this.repo
+      .createQueryBuilder()
+      .delete()
+      .where('"requestId" = :requestId', { requestId })
+      .andWhere('"userId" IN (:...userIds)', { userIds: [...new Set(userIds)] })
+      .andWhere('title IN (:...titles)', { titles })
+      .execute();
+
+    return result.affected ?? 0;
   }
 }

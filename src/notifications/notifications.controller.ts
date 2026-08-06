@@ -4,18 +4,19 @@ import {
   Patch,
   Delete,
   Param,
-  Sse,
-  MessageEvent,
   ParseUUIDPipe,
   HttpCode,
   HttpStatus,
+  Req,
   Res,
 } from '@nestjs/common';
-import { Observable } from 'rxjs';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { NotificationsService } from './notifications.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from '../entities/user.entity';
+
+/** Well under the common 60s proxy/load-balancer idle timeout. */
+const SSE_HEARTBEAT_MS = 25_000;
 
 @Controller('notifications')
 export class NotificationsController {
@@ -26,16 +27,43 @@ export class NotificationsController {
    * SSE endpoint — browser holds this connection open and receives push events.
    * Each event is JSON: { type: 'notification', notification: {...} }
    *                  or { type: 'init', notifications: [...] }  (on connect)
+   *
+   * Written by hand instead of using Nest's @Sse() decorator: combined with
+   * the app's global ClassSerializerInterceptor, @Sse() throws "Cannot set
+   * headers after they are sent to the client" on every single event — a
+   * structural incompatibility between Nest's SSE response handling and its
+   * interceptor pipeline (reproduced even with a no-op interceptor, so it's
+   * not about what the interceptor does, just that one is registered at all).
+   * Writing the stream directly sidesteps that machinery entirely.
    */
-  @Sse('stream')
+  @Get('stream')
   stream(
     @CurrentUser() user: User,
+    @Req() req: Request,
     @Res() res: Response,
-  ): Observable<MessageEvent> {
-    // Keep SSE connection alive through proxies / CloudFront
+  ): void {
+    res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('X-Accel-Buffering', 'no');
-    return this.notificationsService.getStream(user.id);
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // keep alive through proxies / CloudFront
+    res.flushHeaders();
+
+    const subscription = this.notificationsService.getStream(user.id).subscribe({
+      next: (event) => res.write(`data: ${JSON.stringify(event.data)}\n\n`),
+    });
+
+    // A stream with nothing to say writes zero bytes, and idle timeouts (proxies,
+    // load balancers, NAT) then reap it silently. This comment frame keeps the
+    // connection provably alive; clients ignore it.
+    const heartbeat = setInterval(
+      () => res.write(': ping\n\n'),
+      SSE_HEARTBEAT_MS,
+    );
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      subscription.unsubscribe();
+    });
   }
 
   /**

@@ -102,14 +102,24 @@ Important notes:
 
 ### Authentication DTOs:
 
-#### LoginDto:
+#### Login request body:
+
+Not a DTO — `POST /auth/login` is handled by `LocalAuthGuard`, so Passport's
+`LocalStrategy` reads the body directly and no class-validator rules apply. A
+bad password returns `401 Invalid credentials` rather than a validation error.
 
 ```typescript
 {
-  email: string; // Email address
+  email: string; // Email address — required
   password: string; // User password
 }
 ```
+
+> `LocalStrategy.validate` falls back to `req.body.employeeId` when `email` is
+> absent, but that branch is unreachable: `passport-local` rejects the request
+> before `validate` runs if its configured `usernameField` (`email`) is missing,
+> and `validateUser` looks users up by email only. Sign-in by employee ID does
+> not work today.
 
 #### ChangePasswordDto:
 

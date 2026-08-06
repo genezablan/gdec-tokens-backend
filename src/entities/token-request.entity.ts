@@ -126,13 +126,57 @@ export class TokenRequest {
   @Column({ type: 'timestamptz', nullable: true })
   cancelledAt: Date;
 
+  // ─── Undo tracking ────────────────────────────────────────────────────────────
+
+  /**
+   * The last approve/reject decision made on this request, kept so it can be
+   * reversed within APPROVAL_UNDO_WINDOW_MS. Cleared whenever the request
+   * re-enters the pipeline by another route (resubmit, cancel).
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  lastDecisionAt: Date | null;
+
+  /** Who made the decision — only they (or an admin) may undo it. */
+  @Column({ type: 'uuid', nullable: true })
+  lastDecisionById: string | null;
+
+  @ManyToOne(() => User, { eager: false, nullable: true })
+  @JoinColumn({ name: 'lastDecisionById' })
+  lastDecisionBy: User;
+
+  /** 'manager_approve' | 'hr_approve' | 'manager_reject' | 'hr_reject' */
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  lastDecisionType: string | null;
+
+  /**
+   * Status to restore on undo. Required rather than derived: an HR rejection is
+   * legal from both `pending` and `manager_approved`, so the decision type alone
+   * doesn't identify where to go back to.
+   */
+  @Column({ type: 'enum', enum: RequestStatus, nullable: true })
+  previousStatus: RequestStatus | null;
+
+  /** Set when the decision above has been undone — blocks undoing it twice. */
+  @Column({ type: 'timestamptz', nullable: true })
+  lastDecisionUndoneAt: Date | null;
+
+  // ─── Approver SLA tracking ────────────────────────────────────────────────────
+
+  /** When the current-stage approver was last reminded that this request is overdue. */
+  @Column({ type: 'timestamptz', nullable: true })
+  slaRemindedAt: Date | null;
+
+  /** When the overdue request was escalated past the approver. Sent at most once per stage. */
+  @Column({ type: 'timestamptz', nullable: true })
+  slaEscalatedAt: Date | null;
+
   // ─── Request-specific form data ──────────────────────────────────────────────
 
   /**
    * Flexible JSON payload — shape varies by type:
-   * task_offloading:  { projectName, projectDescription, ojt? }
-   * coaching:         { coachId, coachName }
-   * learning_subsidy: { courseName, provider, subsidyAmount, tokenCost }
+   * task_offloading:  { requestSubject, startDate, endDate, reason }
+   * coaching:         { coachId, coachName, notes?, preferredSchedule }
+   * learning_subsidy: { courseName, provider, subsidyAmount, tokenCost, startDate, endDate }
    */
   @Column({ type: 'jsonb', nullable: true })
   formData: Record<string, unknown>;
@@ -141,9 +185,9 @@ export class TokenRequest {
   @Column({ nullable: true })
   attachmentUrl: string;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
 }

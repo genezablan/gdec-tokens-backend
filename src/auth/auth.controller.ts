@@ -10,11 +10,19 @@ import {
   HttpStatus,
   Patch,
   Query,
+  UseFilters,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
-import { ChangePasswordDto, ForgotPasswordDto, RegisterDto, ResetPasswordDto, UpdateProfileDto } from './dto';
+import {
+  ChangePasswordDto,
+  ForgotPasswordDto,
+  HeartbeatDto,
+  RegisterDto,
+  ResetPasswordDto,
+  UpdateProfileDto,
+} from './dto';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { GoogleAuthGuard } from './guards/google-auth.guard';
@@ -22,12 +30,33 @@ import { MicrosoftAuthGuard } from './guards/microsoft-auth.guard';
 import { Public } from './decorators/public.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { User } from '../entities/user.entity';
+import { UserRole } from '../common/enums';
+import { CalendarService } from '../calendar/calendar.service';
+import { OAuthErrorFilter } from './filters/oauth-error.filter';
+
+/**
+ * What the Google / Microsoft strategies put on the request after a verified
+ * callback. Typed here so the callbacks aren't destructuring `any` — the shape
+ * is set by each strategy's `validate()`.
+ */
+interface OAuthRequest {
+  user: {
+    providerId: string;
+    email: string;
+    firstName?: string;
+    lastName?: string;
+    /** Microsoft only — Graph tokens for the photo sync and calendar connect. */
+    accessToken?: string;
+    refreshToken?: string;
+  };
+}
 
 @Controller('auth')
 export class AuthController {
   constructor(
     private authService: AuthService,
     private configService: ConfigService,
+    private calendarService: CalendarService,
   ) {}
 
   @Public()
@@ -55,6 +84,21 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async login(@Req() req) {
     return this.authService.login(req.user);
+  }
+
+  /**
+   * POST /auth/heartbeat — pinged periodically by the frontend while the app
+   * is open/focused to build up real session-duration data. Best-effort by
+   * design: the frontend should not surface failures to the user.
+   */
+  @Post('heartbeat')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async heartbeat(
+    @CurrentUser('id') userId: string,
+    @Body() dto: HeartbeatDto,
+  ) {
+    return this.authService.heartbeat(userId, dto.loginEventId);
   }
 
   @Patch('change-password')
@@ -90,7 +134,11 @@ export class AuthController {
     @Query('filename') filename: string,
     @Query('contentType') contentType: string,
   ) {
-    return this.authService.generateProfilePictureUploadUrl(userId, filename, contentType);
+    return this.authService.generateProfilePictureUploadUrl(
+      userId,
+      filename,
+      contentType,
+    );
   }
 
   @Patch('profile')
@@ -99,7 +147,7 @@ export class AuthController {
     @CurrentUser('id') userId: string,
     @Body() dto: UpdateProfileDto,
   ) {
-    return this.authService.updateProfile(userId, dto.nickname, dto.profilePictureKey);
+    return this.authService.updateProfile(userId, dto);
   }
 
   @Public()
@@ -127,23 +175,20 @@ export class AuthController {
   @Public()
   @Get('google/callback')
   @UseGuards(GoogleAuthGuard)
-  async googleAuthCallback(@Req() req, @Res() res: Response) {
-    const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
-    try {
-      const { providerId, email, firstName, lastName } = req.user;
-      const user = await this.authService.validateOAuthUser(
-        providerId,
-        email,
-        'google',
-        firstName,
-        lastName,
-      );
-      const authResponse = await this.authService.login(user);
-      const token = authResponse.accessToken;
-      return res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
-    } catch {
-      return res.redirect(`${frontendUrl}/auth/error?message=Account+not+found.+Please+contact+HR.`);
-    }
+  @UseFilters(OAuthErrorFilter)
+  async googleAuthCallback(@Req() req: OAuthRequest, @Res() res: Response) {
+    const frontendUrl =
+      this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
+    const { providerId, email, firstName, lastName } = req.user;
+    const user = await this.authService.validateOAuthUser(
+      providerId,
+      email,
+      'google',
+      firstName,
+      lastName,
+    );
+    const { accessToken: token } = await this.authService.login(user);
+    return res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
   }
 
   // Microsoft SSO
@@ -157,23 +202,43 @@ export class AuthController {
   @Public()
   @Get('microsoft/callback')
   @UseGuards(MicrosoftAuthGuard)
-  async microsoftAuthCallback(@Req() req, @Res() res: Response) {
-    const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
-    try {
-      const { providerId, email, firstName, lastName } = req.user;
-      const user = await this.authService.validateOAuthUser(
-        providerId,
-        email,
-        'microsoft',
-        firstName,
-        lastName,
-      );
-      const authResponse = await this.authService.login(user);
-      const token = authResponse.accessToken;
-      return res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
-    } catch {
-      return res.redirect(`${frontendUrl}/auth/error?message=Account+not+found.+Please+contact+HR.`);
+  @UseFilters(OAuthErrorFilter)
+  async microsoftAuthCallback(@Req() req: OAuthRequest, @Res() res: Response) {
+    const frontendUrl =
+      this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
+    const {
+      providerId,
+      email,
+      firstName,
+      lastName,
+      accessToken,
+      refreshToken,
+    } = req.user;
+    const user = await this.authService.validateOAuthUser(
+      providerId,
+      email,
+      'microsoft',
+      firstName,
+      lastName,
+    );
+    // Best-effort: pull the Outlook profile photo if the user has none yet.
+    await this.authService.syncMicrosoftProfilePicture(user, accessToken);
+    // Auto-connect the coach's Outlook calendar using the login tokens. Guarded
+    // on the token actually being present — Microsoft doesn't always return one,
+    // and there is nothing to connect without it.
+    if (user.roles?.includes(UserRole.COACH) && accessToken) {
+      try {
+        await this.calendarService.saveLoginConnection(user.id, {
+          accessToken,
+          refreshToken,
+          accountEmail: email,
+        });
+      } catch {
+        // Best-effort — calendar connect must never block sign-in.
+      }
     }
+    const { accessToken: token } = await this.authService.login(user);
+    return res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
   }
 
   @Get('me')

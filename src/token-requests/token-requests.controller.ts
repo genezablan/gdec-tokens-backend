@@ -12,12 +12,17 @@ import {
 } from '@nestjs/common';
 import { TokenRequestsService } from './token-requests.service';
 import { CoachingSessionsService } from './coaching-sessions.service';
+import { ApprovalSlaService } from './approval-sla.service';
 import { CreateTaskOffloadingRequestDto } from './dto/create-task-offloading-request.dto';
 import { CreateCoachingRequestDto } from './dto/create-coaching-request.dto';
 import { CreateLearningSubsidyRequestDto } from './dto/create-learning-subsidy-request.dto';
 import { RejectTokenRequestDto } from './dto/reject-token-request.dto';
 import { ResubmitTokenRequestDto } from './dto/resubmit-token-request.dto';
 import { BookSessionDto } from './dto/book-session.dto';
+import { RequestCancelSessionDto } from './dto/request-cancel-session.dto';
+import { ProposeSessionTimeDto } from './dto/propose-session-time.dto';
+import { RejectProposalDto } from './dto/reject-proposal.dto';
+import { RequestNewTimeDto } from './dto/request-new-time.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { User } from '../entities/user.entity';
@@ -29,8 +34,19 @@ export class TokenRequestsController {
   constructor(
     private readonly tokenRequestsService: TokenRequestsService,
     private readonly coachingSessionsService: CoachingSessionsService,
+    private readonly approvalSlaService: ApprovalSlaService,
     private readonly s3Service: S3Service,
   ) {}
+
+  /**
+   * POST /token-requests/sla/run
+   * Admin: trigger the approver-SLA sweep immediately (it also runs daily via cron).
+   */
+  @Post('sla/run')
+  @Roles(UserRole.ADMIN)
+  runSlaSweep() {
+    return this.approvalSlaService.runNow();
+  }
 
   /**
    * GET /token-requests/presigned-upload?fileName=x&contentType=y
@@ -143,6 +159,16 @@ export class TokenRequestsController {
   @Roles(UserRole.COACH, UserRole.ADMIN)
   getCoachOverview(@CurrentUser() user: User) {
     return this.coachingSessionsService.findCoachOverview(user.id);
+  }
+
+  /**
+   * GET /token-requests/coaching/my-events
+   * Any user: their coaching sessions (as coach OR employee) as dated calendar
+   * events. Powers the navbar calendar popover.
+   */
+  @Get('coaching/my-events')
+  getMyCoachingEvents(@CurrentUser() user: User) {
+    return this.coachingSessionsService.findMyEvents(user.id);
   }
 
   /**
@@ -260,6 +286,30 @@ export class TokenRequestsController {
   }
 
   /**
+   * PATCH /token-requests/:id/undo-decision
+   * Reverse your own approve/reject within the undo window (1 hour), restoring the
+   * request's previous status and refunding any tokens the decision deducted.
+   *
+   * Admins may undo anyone's decision. Errors are meaningful to the client:
+   *   403 — not your decision
+   *   409 — already undone, or something downstream has acted on it
+   *   410 — the window has passed
+   */
+  @Patch(':id/undo-decision')
+  @Roles(
+    UserRole.APPROVER,
+    UserRole.COACH,
+    UserRole.HR_APPROVER as UserRole,
+    UserRole.ADMIN,
+  )
+  undoDecision(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.tokenRequestsService.undoDecision(id, user);
+  }
+
+  /**
    * PATCH /token-requests/:id/resubmit
    * Employee: update and resubmit a rejected request back to pending.
    */
@@ -370,8 +420,9 @@ export class TokenRequestsController {
 
   /**
    * DELETE /token-requests/:id/sessions/:sessionId
-   * Cancel a scheduled session. Releases the availability slot.
-   * Either the employee or the coach can cancel.
+   * Withdraw a not-yet-confirmed booking. Releases the availability slot.
+   * Either the employee or the coach can do this unilaterally — for an
+   * already-confirmed (scheduled) session, use request-cancel instead.
    */
   @Delete(':id/sessions/:sessionId')
   cancelSession(
@@ -380,5 +431,126 @@ export class TokenRequestsController {
     @CurrentUser() user: User,
   ) {
     return this.coachingSessionsService.cancelSession(id, sessionId, user.id);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/request-cancel
+   * Either party requests to cancel a confirmed (scheduled) session. Doesn't
+   * cancel immediately — the other party must approve or decline it.
+   * Body: { reason?: string }
+   */
+  @Patch(':id/sessions/:sessionId/request-cancel')
+  requestCancelSession(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+    @Body() dto: RequestCancelSessionDto,
+  ) {
+    return this.coachingSessionsService.requestCancelSession(id, sessionId, user.id, dto);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/approve-cancel
+   * The party who did NOT request cancellation approves it — finalizes to cancelled.
+   */
+  @Patch(':id/sessions/:sessionId/approve-cancel')
+  approveCancelSession(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.coachingSessionsService.approveCancelSession(id, sessionId, user.id);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/decline-cancel
+   * Decline a pending cancellation request (or withdraw one you made yourself)
+   * — reverts the session back to scheduled.
+   */
+  @Patch(':id/sessions/:sessionId/decline-cancel')
+  declineCancelSession(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.coachingSessionsService.declineCancelSession(id, sessionId, user.id);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/propose-time
+   * Coach counter-proposes a (new) time — from a pending booking, a scheduled
+   * session, a pending cancellation, or to overwrite their own pending proposal.
+   * Body: { availabilityId? } or { availableDate?, startTime?, endTime? }, plus { note? }
+   */
+  @Patch(':id/sessions/:sessionId/propose-time')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  proposeSessionTime(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+    @Body() dto: ProposeSessionTimeDto,
+  ) {
+    return this.coachingSessionsService.proposeSessionTime(id, sessionId, user.id, dto);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/accept-proposal
+   * Employee accepts the coach's proposed time — session moves to it and
+   * becomes scheduled.
+   */
+  @Patch(':id/sessions/:sessionId/accept-proposal')
+  acceptProposal(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.coachingSessionsService.acceptProposedTime(id, sessionId, user.id);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/reject-proposal
+   * Employee rejects the proposed time. Outcome depends on where the proposal
+   * came from: pending booking → declined; scheduled → stays at the original
+   * time; pending cancellation → cancelled.
+   * Body: { reason?: string }
+   */
+  @Patch(':id/sessions/:sessionId/reject-proposal')
+  rejectProposal(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+    @Body() dto: RejectProposalDto,
+  ) {
+    return this.coachingSessionsService.rejectProposedTime(id, sessionId, user.id, dto);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/request-new-time
+   * Employee asks the coach for a different time instead of accepting/rejecting.
+   * Body: { note?: string }
+   */
+  @Patch(':id/sessions/:sessionId/request-new-time')
+  requestNewTime(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+    @Body() dto: RequestNewTimeDto,
+  ) {
+    return this.coachingSessionsService.requestAnotherTime(id, sessionId, user.id, dto);
+  }
+
+  /**
+   * PATCH /token-requests/:id/sessions/:sessionId/withdraw-proposal
+   * Coach withdraws their pending proposal — the session reverts to its prior
+   * status (pending booking / scheduled / pending cancellation).
+   */
+  @Patch(':id/sessions/:sessionId/withdraw-proposal')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  withdrawProposal(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.coachingSessionsService.withdrawProposedTime(id, sessionId, user.id);
   }
 }

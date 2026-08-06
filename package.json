@@ -28,9 +28,11 @@
     "import:ops-gmail": "ts-node -r tsconfig-paths/register scripts/import-ops-gmail.ts",
     "link:supervisors": "ts-node -r tsconfig-paths/register scripts/link-supervisors.ts",
     "seed:approver-roles": "ts-node -r tsconfig-paths/register scripts/seed-approver-roles.ts",
-    "seed:coach-roles": "ts-node -r tsconfig-paths/register scripts/seed-coach-roles.ts"
+    "seed:coach-roles": "ts-node -r tsconfig-paths/register scripts/seed-coach-roles.ts",
+    "seed:communities": "ts-node -r tsconfig-paths/register scripts/seed-communities.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.1",
     "@aws-sdk/client-s3": "^3.992.0",
     "@aws-sdk/client-ses": "^3.992.0",
     "@aws-sdk/s3-request-presigner": "^3.992.0",
@@ -40,6 +42,7 @@
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/schedule": "^5.0.1",
     "@nestjs/typeorm": "^11.0.0",
     "@types/passport-google-oauth20": "^2.0.17",
     "@types/passport-local": "^1.0.38",
@@ -55,8 +58,10 @@
     "pg": "^8.18.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
+    "sanitize-html": "^2.17.5",
     "typeorm": "^0.3.28",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
@@ -70,6 +75,7 @@
     "@types/multer": "^2.0.0",
     "@types/node": "^22.10.7",
     "@types/passport-jwt": "^4.0.1",
+    "@types/sanitize-html": "^2.16.1",
     "@types/supertest": "^6.0.2",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
@@ -98,9 +104,43 @@
       "^.+\\.(t|j)s$": "ts-jest"
     },
     "collectCoverageFrom": [
-      "**/*.(t|j)s"
+      "**/*.service.ts",
+      "common/utils/**/*.ts",
+      "!**/*.spec.ts"
     ],
     "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "coverageThreshold": {
+      "global": {
+        "statements": 1,
+        "branches": 1,
+        "functions": 0,
+        "lines": 1
+      },
+      "src/common/utils/timezone.ts": {
+        "statements": 95,
+        "branches": 90,
+        "functions": 95,
+        "lines": 95
+      },
+      "src/token-balances/token-balances.service.ts": {
+        "statements": 50,
+        "branches": 58,
+        "functions": 45,
+        "lines": 50
+      },
+      "src/token-requests/token-requests.service.ts": {
+        "statements": 17,
+        "branches": 11,
+        "functions": 13,
+        "lines": 17
+      },
+      "src/token-requests/coaching-sessions.service.ts": {
+        "statements": 15,
+        "branches": 13,
+        "functions": 10,
+        "lines": 15
+      }
+    }
   }
 }

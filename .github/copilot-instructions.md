@@ -69,7 +69,7 @@ src/
 │   ├── strategies/                # local.strategy.ts, jwt.strategy.ts
 │   ├── guards/                    # jwt-auth.guard.ts, local-auth.guard.ts, roles.guard.ts
 │   ├── decorators/                # @Public(), @Roles(), @CurrentUser()
-│   ├── dto/                       # login.dto.ts (LoginDto, ChangePasswordDto)
+│   ├── dto/                       # login.dto.ts (PASSWORD_MIN_LENGTH, ChangePasswordDto, RegisterDto, …)
 │   └── interfaces/                # jwt-payload.interface.ts (JwtPayload, AuthResponse)
 │
 ├── common/

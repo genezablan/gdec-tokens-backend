@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Put,
   Delete,
   Patch,
   Body,
@@ -10,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { CoachAvailabilityService } from './coach-availability.service';
 import { CreateAvailabilitySlotDto } from './dto/create-availability-slot.dto';
+import { UpdateCoachingHoursDto } from './dto/update-coaching-hours.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { User } from '../entities/user.entity';
@@ -37,6 +39,50 @@ export class CoachAvailabilityController {
   @Roles(UserRole.COACH, UserRole.ADMIN)
   getMySlots(@CurrentUser() user: User) {
     return this.service.findMySlots(user.id);
+  }
+
+  /**
+   * POST /coach-availability/sync-outlook
+   * Pull busy times from the coach's Outlook calendar and deactivate any
+   * conflicting unbooked slots.
+   */
+  @Post('sync-outlook')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  syncOutlook(@CurrentUser() user: User) {
+    return this.service.syncWithOutlook(user.id);
+  }
+
+  /**
+   * GET /coach-availability/coaching-hours
+   * Coach: read their own coaching-hours config.
+   */
+  @Get('coaching-hours')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  getCoachingHours(@CurrentUser() user: User) {
+    return this.service.getCoachingHours(user.id);
+  }
+
+  /**
+   * PUT /coach-availability/coaching-hours
+   * Coach: update their coaching-hours config (days, window, session length).
+   */
+  @Put('coaching-hours')
+  @Roles(UserRole.COACH, UserRole.ADMIN)
+  updateCoachingHours(
+    @CurrentUser() user: User,
+    @Body() dto: UpdateCoachingHoursDto,
+  ) {
+    return this.service.updateCoachingHours(user.id, dto);
+  }
+
+  /**
+   * GET /coach-availability/:coachId/slots
+   * Any authenticated user: bookable slots generated from the coach's coaching
+   * hours minus their Outlook busy times. Returns { connected, hasHours, slots }.
+   */
+  @Get(':coachId/slots')
+  getBookableSlots(@Param('coachId', ParseUUIDPipe) coachId: string) {
+    return this.service.getBookableSlots(coachId);
   }
 
   /**

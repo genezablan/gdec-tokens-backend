@@ -15,7 +15,11 @@ request lifecycle:
 1. **Employee** submits a request (see type-specific guide for form fields)
 2. **Manager** (`approver` role) reviews and approves or rejects
 3. **HR** (`hr_approver` role) does the final review — approval triggers token deduction
-4. **Employee** is notified by email at each stage and can cancel while still `pending`
+4. **Employee** is notified by email at each stage and can cancel any time before HR's final
+   approval — i.e. while `pending` **or** `manager_approved`. Cancelling a `manager_approved`
+   request notifies the manager and all active HR approvers before the status flips, since it
+   was already sitting in their queue. Once `approved` the tokens are deducted and cancelling
+   is blocked (no refund path).
 
 There are 3 request types driven by `development_options`:
 
@@ -56,7 +60,7 @@ All endpoints require `Authorization: Bearer <token>` header.
 | `PATCH` | `/token-requests/:id/hr-approve`      | HR approves → `approved` + tokens deducted                | `hr_approver` or `admin`              |
 | `PATCH` | `/token-requests/:id/hr-reject`       | HR rejects → `rejected`                                   | `hr_approver` or `admin`              |
 | `PATCH` | `/token-requests/:id/resubmit`        | Employee updates and resubmits a rejected request         | Any authenticated user                |
-| `PATCH` | `/token-requests/:id/cancel`          | Employee cancels (pending only) → `cancelled`             | Any authenticated user                |
+| `PATCH` | `/token-requests/:id/cancel`          | Employee cancels (`pending` or `manager_approved`) → `cancelled` | Any authenticated user         |
 
 ---
 
@@ -379,7 +383,8 @@ Fetch `GET /token-requests/my`. Show a list/table where each row has:
 | `cancelled`        | Grey           |
 
 - Submitted date (`createdAt`)
-- **Cancel button** — visible only when `status === 'pending'`; calls `PATCH /:id/cancel`
+- **Cancel button** — visible when `status === 'pending'` or `'manager_approved'`; calls
+  `PATCH /:id/cancel`. Confirm first for `manager_approved` (the manager and HR get notified)
 - **Resubmit button** — visible only when `status === 'rejected'`; opens type-specific edit modal
 - Row click → detail drawer showing `formData`, snapshot info, rejection comment, and attachment link
 
@@ -478,6 +483,7 @@ Table from `GET /token-requests?status=<filter>`.
 - [ ] File upload works; returned URL is sent as `attachmentUrl`
 - [ ] My Requests page shows history with correct status badges
 - [ ] Employee can cancel a pending request
+- [ ] Employee can cancel a manager-approved request; manager + HR are notified
 - [ ] Rejected employee can resubmit
 - [ ] Manager sees their pending queue and can approve or reject with a comment
 - [ ] HR sees the manager-approved queue and can do final approve/reject

@@ -4,18 +4,24 @@ import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from '../entities/user.entity';
+import { LoginEvent } from '../entities/login-event.entity';
 import { CommonModule } from '../common/common.module';
+import { CalendarModule } from '../calendar/calendar.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { LocalStrategy } from './strategies/local.strategy';
 import { GoogleStrategy } from './strategies/google.strategy';
 import { MicrosoftStrategy } from './strategies/microsoft.strategy';
+import { OAuthErrorFilter } from './filters/oauth-error.filter';
 
 @Module({
   imports: [
     CommonModule,
-    TypeOrmModule.forFeature([User]),
+    CalendarModule, // provides CalendarService for auto-connect at SSO login
+    NotificationsModule, // in-app notifications for registration reviewers
+    TypeOrmModule.forFeature([User, LoginEvent]),
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -35,6 +41,7 @@ import { MicrosoftStrategy } from './strategies/microsoft.strategy';
     LocalStrategy,
     GoogleStrategy,
     MicrosoftStrategy,
+    OAuthErrorFilter,
   ],
   exports: [AuthService, JwtModule, PassportModule],
 })

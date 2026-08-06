@@ -93,6 +93,49 @@ export class S3Service {
   }
 
   /**
+   * Extracts the object key from a full virtual-hosted S3 URL pointing at THIS
+   * bucket (the form produced by uploadFile / presigned PUT). Returns null for
+   * URLs that aren't in this bucket (e.g. public Giphy GIFs) so callers can skip
+   * presigning them.
+   */
+  extractObjectKey(url: string | null | undefined): string | null {
+    if (!url) return null;
+    try {
+      const region = this.configService.get<string>('s3.region') || 'ap-southeast-1';
+      const host = `${this.bucketName}.s3.${region}.amazonaws.com`;
+      const parsed = new URL(url);
+      if (parsed.hostname !== host) return null;
+      return decodeURIComponent(parsed.pathname.replace(/^\/+/, '')) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Resolve stored avatar values (S3 object keys) to short-lived presigned GET
+   * URLs, in place. Values already http(s) (e.g. external URLs) are left as-is.
+   * Keys are deduped so each object is signed once. Mutates each item's
+   * `avatarUrl`. Mirrors the post mapper's avatar resolution for reuse outside
+   * the feed (members, profiles, reactors).
+   */
+  async presignAvatars<T extends { avatarUrl: string | null }>(
+    items: T[],
+  ): Promise<void> {
+    const needs = (u: string | null): u is string => !!u && !u.startsWith('http');
+    const keys = [...new Set(items.map((i) => i.avatarUrl).filter(needs))];
+    if (keys.length === 0) return;
+    const signed = await Promise.all(
+      keys.map((key) => this.getPresignedDownloadUrl(key, 900)),
+    );
+    const urlByKey = new Map(keys.map((key, i) => [key, signed[i]]));
+    for (const item of items) {
+      if (needs(item.avatarUrl)) {
+        item.avatarUrl = urlByKey.get(item.avatarUrl) ?? item.avatarUrl;
+      }
+    }
+  }
+
+  /**
    * Generates a standardized S3 key for token request attachments
    * @param userId - User ID
    * @param requestId - Request ID
@@ -159,15 +202,18 @@ export class S3Service {
 
   /**
    * Generates a pre-signed PUT URL so the browser can upload directly to S3.
-   * Returns { uploadUrl, fileUrl, key }.
-   * The browser PUTs the file to uploadUrl, then passes fileUrl as attachmentUrl.
-   * Expires in 5 minutes.
+   * Returns { uploadUrl, fileUrl, viewUrl, key }.
+   * The browser PUTs the file to uploadUrl, then passes fileUrl as attachmentUrl
+   * for persistence. viewUrl is a short-lived presigned GET URL the UI can use to
+   * preview the just-uploaded object (the bucket is private, so the raw fileUrl
+   * would 403 until the backend re-presigns it on read).
+   * Upload URL expires in 5 minutes; view URL in 15 minutes.
    */
   async generatePresignedUploadUrl(
     userId: string,
     filename: string,
     contentType: string,
-  ): Promise<{ uploadUrl: string; fileUrl: string; key: string }> {
+  ): Promise<{ uploadUrl: string; fileUrl: string; viewUrl: string; key: string }> {
     const key = `token-request-attachments/${userId}/${uuidv4()}/${filename}`;
     const region = this.configService.get<string>('s3.region') || 'ap-southeast-1';
 
@@ -182,8 +228,9 @@ export class S3Service {
     // Forward slashes (folder separators) are NOT encoded.
     const encodedKey = key.split('/').map(encodeURIComponent).join('/');
     const fileUrl = `https://${this.bucketName}.s3.${region}.amazonaws.com/${encodedKey}`;
+    const viewUrl = await this.getPresignedDownloadUrl(key, 900);
 
-    return { uploadUrl, fileUrl, key };
+    return { uploadUrl, fileUrl, viewUrl, key };
   }
 
   /**
@@ -229,5 +276,37 @@ export class S3Service {
 
     const uploadUrl = await getSignedUrl(this.s3Client, command, { expiresIn: 300 });
     return { uploadUrl, key };
+  }
+
+  /**
+   * Generates a pre-signed PUT URL for uploading a tutorial asset directly from the browser.
+   * Key pattern: tutorials/<tutorialId>/<assetType>/<uuid>/<filename>  (assetType = video | thumbnail)
+   *
+   * `expiresInSeconds` must cover the whole upload — the signature dies mid-transfer
+   * otherwise. Videos are allowed up to 1 GB, so callers pass a long TTL for them.
+   */
+  async generateTutorialAssetPresignedUploadUrl(
+    tutorialId: string,
+    assetType: 'video' | 'thumbnail',
+    filename: string,
+    contentType: string,
+    expiresInSeconds = 300,
+  ): Promise<{ uploadUrl: string; fileUrl: string; key: string }> {
+    const key = `tutorials/${tutorialId}/${assetType}/${uuidv4()}/${filename}`;
+    const region = this.configService.get<string>('s3.region') || 'ap-southeast-1';
+
+    const command = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+      ContentType: contentType,
+    });
+
+    const uploadUrl = await getSignedUrl(this.s3Client, command, {
+      expiresIn: expiresInSeconds,
+    });
+    const encodedKey = key.split('/').map(encodeURIComponent).join('/');
+    const fileUrl = `https://${this.bucketName}.s3.${region}.amazonaws.com/${encodedKey}`;
+
+    return { uploadUrl, fileUrl, key };
   }
 }

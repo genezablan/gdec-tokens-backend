@@ -11,24 +11,42 @@ import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { User } from '../entities/user.entity';
+import { LoginEvent } from '../entities/login-event.entity';
 import { AuthProvider, EmployeeStatus, UserRole } from '../common/enums';
-import { ChangePasswordDto, ForgotPasswordDto, RegisterDto, ResetPasswordDto } from './dto';
+import {
+  ChangePasswordDto,
+  ForgotPasswordDto,
+  RegisterDto,
+  ResetPasswordDto,
+  UpdateProfileDto,
+} from './dto';
 import { AuthResponse, JwtPayload } from './interfaces/jwt-payload.interface';
 import { EmailService } from '../common/services/email.service';
 import { S3Service } from '../common/services/s3.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../entities/notification.entity';
+
+/** A gap between heartbeats larger than this is treated as idle/away, not active usage. */
+const HEARTBEAT_IDLE_THRESHOLD_SECONDS = 5 * 60;
 
 @Injectable()
 export class AuthService {
   constructor(
     @InjectRepository(User)
     private userRepository: Repository<User>,
+    @InjectRepository(LoginEvent)
+    private loginEventRepository: Repository<LoginEvent>,
     private jwtService: JwtService,
     private configService: ConfigService,
     private emailService: EmailService,
     private s3Service: S3Service,
+    private notificationsService: NotificationsService,
   ) {}
 
-  async validateUser(identifier: string, password: string): Promise<User | null> {
+  async validateUser(
+    identifier: string,
+    password: string,
+  ): Promise<User | null> {
     // Find user by email only
     const user = await this.userRepository.findOne({
       where: { email: identifier },
@@ -40,7 +58,9 @@ export class AuthService {
 
     // Check if account is pending HR approval
     if (user.isPendingApproval) {
-      throw new UnauthorizedException('Your account is pending HR approval. You will be notified by email once approved.');
+      throw new UnauthorizedException(
+        'Your account is pending HR approval. You will be notified by email once approved.',
+      );
     }
 
     // Check if user is active
@@ -62,6 +82,19 @@ export class AuthService {
   }
 
   async login(user: User): Promise<AuthResponse> {
+    // Record the login for engagement analytics (last-login + append-only event log).
+    // Best-effort: a tracking failure must never block a valid login.
+    let loginEventId: string | null = null;
+    try {
+      await this.userRepository.update(user.id, { lastLoginAt: new Date() });
+      const event = await this.loginEventRepository.save(
+        this.loginEventRepository.create({ userId: user.id }),
+      );
+      loginEventId = event.id;
+    } catch {
+      // swallow — analytics tracking is non-critical
+    }
+
     const payload: JwtPayload = {
       sub: user.id,
       employeeId: user.employeeId,
@@ -78,12 +111,14 @@ export class AuthService {
     const accessToken = this.jwtService.sign(payload as any);
 
     const refreshToken = this.jwtService.sign(refreshPayload as any, {
-      expiresIn: (this.configService.get<string>('JWT_REFRESH_EXPIRATION') || '7d') as any,
+      expiresIn: (this.configService.get<string>('JWT_REFRESH_EXPIRATION') ||
+        '7d') as any,
     });
 
     return {
       accessToken,
       refreshToken,
+      loginEventId,
       user: {
         id: user.id,
         employeeId: user.employeeId,
@@ -97,6 +132,39 @@ export class AuthService {
       },
       requiresPasswordChange: !user.isPasswordChanged,
     };
+  }
+
+  /**
+   * Extends the session-duration clock for a login event. The frontend pings
+   * this on an interval while the app is open/focused. If the gap since the
+   * last heartbeat (or login, for the first ping) exceeds the idle threshold,
+   * the elapsed time is treated as idle/away and not counted — this keeps a
+   * laptop left open overnight from inflating usage hours.
+   */
+  async heartbeat(
+    userId: string,
+    loginEventId: string,
+  ): Promise<{ durationSeconds: number }> {
+    const event = await this.loginEventRepository.findOne({
+      where: { id: loginEventId, userId },
+    });
+    if (!event) {
+      throw new NotFoundException('Login session not found');
+    }
+
+    const now = new Date();
+    const reference = event.lastHeartbeatAt ?? event.createdAt;
+    const gapSeconds = Math.round(
+      (now.getTime() - new Date(reference).getTime()) / 1000,
+    );
+
+    if (gapSeconds > 0 && gapSeconds <= HEARTBEAT_IDLE_THRESHOLD_SECONDS) {
+      event.durationSeconds += gapSeconds;
+    }
+    event.lastHeartbeatAt = now;
+
+    await this.loginEventRepository.save(event);
+    return { durationSeconds: event.durationSeconds };
   }
 
   async changePassword(
@@ -151,7 +219,8 @@ export class AuthService {
     let user = await this.userRepository.findOne({
       where: {
         providerId,
-        authProvider: provider === 'google' ? AuthProvider.GOOGLE : AuthProvider.MICROSOFT,
+        authProvider:
+          provider === 'google' ? AuthProvider.GOOGLE : AuthProvider.MICROSOFT,
       },
     });
 
@@ -172,8 +241,9 @@ export class AuthService {
 
     // Link OAuth account to existing user
     user.providerId = providerId;
-    user.authProvider = provider === 'google' ? AuthProvider.GOOGLE : AuthProvider.MICROSOFT;
-    
+    user.authProvider =
+      provider === 'google' ? AuthProvider.GOOGLE : AuthProvider.MICROSOFT;
+
     // Update name if provided and empty
     if (firstName && !user.firstName) {
       user.firstName = firstName;
@@ -185,6 +255,40 @@ export class AuthService {
     await this.userRepository.save(user);
 
     return user;
+  }
+
+  /**
+   * Sync the user's profile photo from Microsoft Graph on SSO login.
+   * Best-effort: only runs when the user has no picture set (won't overwrite a
+   * custom upload), and never blocks login on failure.
+   */
+  async syncMicrosoftProfilePicture(
+    user: User,
+    accessToken?: string,
+  ): Promise<void> {
+    if (!accessToken || user.profilePicture) return;
+
+    try {
+      const res = await fetch(
+        'https://graph.microsoft.com/v1.0/me/photo/$value',
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+      // 404 = the account has no photo; anything non-OK → skip silently.
+      if (!res.ok) return;
+
+      const contentType = res.headers.get('content-type') || 'image/jpeg';
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (buffer.length === 0) return;
+
+      const ext = contentType.includes('png') ? 'png' : 'jpg';
+      const key = `profile-pictures/${user.id}/${user.id}-${Date.now()}.${ext}`;
+      await this.s3Service.uploadFile(buffer, key, { contentType });
+
+      user.profilePicture = key;
+      await this.userRepository.save(user);
+    } catch {
+      // Best-effort — a photo sync failure must never break sign-in.
+    }
   }
 
   async refreshToken(refreshToken: string): Promise<{ accessToken: string }> {
@@ -251,9 +355,13 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto): Promise<{ message: string }> {
-    const existing = await this.userRepository.findOne({ where: { email: dto.email } });
+    const existing = await this.userRepository.findOne({
+      where: { email: dto.email },
+    });
     if (existing) {
-      throw new BadRequestException('An account with this email already exists');
+      throw new BadRequestException(
+        'An account with this email already exists',
+      );
     }
 
     // Verify the supervisor exists
@@ -281,31 +389,81 @@ export class AuthService {
       contact: dto.contact,
       roles: [UserRole.EMPLOYEE],
       employeeStatus: EmployeeStatus.PROBATIONARY,
-      isActive: false,          // Cannot log in until HR approves
-      isPendingApproval: true,  // Flags account for HR review
-      isPasswordChanged: true,  // They set their own password at registration
+      isActive: false, // Cannot log in until HR approves
+      isPendingApproval: true, // Flags account for HR review
+      isPasswordChanged: true, // They set their own password at registration
     });
 
     await this.userRepository.save(user);
 
-    return { message: 'Registration submitted. Your account is pending HR approval. You will receive an email once your account is approved.' };
+    this.emailService
+      .sendRegistrationSubmittedEmail({
+        email: user.email,
+        name: user.fullName,
+      })
+      .catch(() => {});
+
+    // Everyone who can act on the approval queue: HR approvers and admins
+    // (the /hr/registrations page is gated to exactly these roles). Roles can
+    // overlap on one person — the query returns each user once.
+    const reviewers = await this.userRepository
+      .createQueryBuilder('reviewer')
+      .where('(:hrRole = ANY(reviewer.roles) OR :adminRole = ANY(reviewer.roles))', {
+        hrRole: UserRole.HR_APPROVER,
+        adminRole: UserRole.ADMIN,
+      })
+      .andWhere('reviewer.isActive = true')
+      .getMany();
+
+    for (const reviewer of reviewers) {
+      this.emailService
+        .sendNewRegistrationNotification({
+          hrEmail: reviewer.email,
+          hrName: reviewer.fullName,
+          applicantName: user.fullName,
+          applicantEmail: user.email,
+          department: user.department,
+        })
+        .catch(() => {});
+
+      this.notificationsService
+        .create(reviewer.id, {
+          title: 'New Registration Pending Approval',
+          message: `${user.fullName}${user.department ? ` (${user.department})` : ''} registered and is awaiting account approval.`,
+          type: NotificationType.INFO,
+          metadata: { deeplink: '/hr/registrations' },
+        })
+        .catch(() => {});
+    }
+
+    return {
+      message:
+        'Registration submitted. Your account is pending HR approval. You will receive an email once your account is approved.',
+    };
   }
 
   async forgotPassword(dto: ForgotPasswordDto): Promise<{ message: string }> {
-    const user = await this.userRepository.findOne({ where: { email: dto.email } });
-    const silentSuccess = { message: 'If that email exists, a reset link has been sent.' };
+    const user = await this.userRepository.findOne({
+      where: { email: dto.email },
+    });
+    const silentSuccess = {
+      message: 'If that email exists, a reset link has been sent.',
+    };
 
     if (!user || !user.isActive) return silentSuccess;
 
     const rawToken = crypto.randomBytes(32).toString('hex');
     const hashedToken = await bcrypt.hash(rawToken, 10);
-    const expiry = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+    // 30 minutes — keep in sync with the ForgotPassword page copy and the
+    // expiryMinutes passed to the reset email below.
+    const expiry = new Date(Date.now() + 30 * 60 * 1000);
 
     user.passwordResetToken = hashedToken;
     user.passwordResetExpiry = expiry;
     await this.userRepository.save(user);
 
-    const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
+    const frontendUrl =
+      this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
     const resetLink = `${frontendUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
 
     try {
@@ -313,7 +471,7 @@ export class AuthService {
         email: user.email,
         name: `${user.firstName} ${user.lastName}`,
         resetLink,
-        expiryMinutes: 5,
+        expiryMinutes: 30,
       });
     } catch {
       // Don't expose email errors to caller
@@ -323,7 +481,9 @@ export class AuthService {
   }
 
   async resetPassword(dto: ResetPasswordDto): Promise<{ message: string }> {
-    const user = await this.userRepository.findOne({ where: { email: dto.email } });
+    const user = await this.userRepository.findOne({
+      where: { email: dto.email },
+    });
 
     if (!user || !user.passwordResetToken || !user.passwordResetExpiry) {
       throw new BadRequestException('Invalid or expired reset token');
@@ -359,7 +519,8 @@ export class AuthService {
     }
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password, passwordResetToken, passwordResetExpiry, ...safeUser } = user;
+    const { password, passwordResetToken, passwordResetExpiry, ...safeUser } =
+      user;
     const resolved = await this.resolveProfilePicture(safeUser);
     return resolved as Omit<User, 'password'>;
   }
@@ -379,24 +540,46 @@ export class AuthService {
 
   async updateProfile(
     userId: string,
-    nickname?: string,
-    profilePictureKey?: string,
+    dto: UpdateProfileDto,
   ): Promise<Omit<User, 'password'>> {
     const user = await this.userRepository.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
 
-    if (nickname !== undefined) {
-      user.nickname = nickname.trim() || null;
+    if (dto.nickname !== undefined) {
+      user.nickname = dto.nickname.trim() || null;
     }
 
-    if (profilePictureKey) {
-      user.profilePicture = profilePictureKey;
+    if (dto.profilePictureKey) {
+      user.profilePicture = dto.profilePictureKey;
+    }
+
+    // Coach profile fields — send only what changed; empty string/array clears.
+    if (dto.headline !== undefined) {
+      user.headline = dto.headline.trim() || null;
+    }
+
+    if (dto.bio !== undefined) {
+      user.bio = dto.bio.trim() || null;
+    }
+
+    if (dto.specialties !== undefined) {
+      const cleaned = dto.specialties.map((s) => s.trim()).filter(Boolean);
+      user.specialties = cleaned.length ? cleaned : null;
+    }
+
+    if (dto.yearsExperience !== undefined) {
+      user.yearsExperience = dto.yearsExperience;
+    }
+
+    if (dto.maxCoachesPerCycle !== undefined) {
+      user.maxCoachesPerCycle = dto.maxCoachesPerCycle;
     }
 
     await this.userRepository.save(user);
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password, passwordResetToken, passwordResetExpiry, ...safeUser } = user;
+    const { password, passwordResetToken, passwordResetExpiry, ...safeUser } =
+      user;
     const resolved = await this.resolveProfilePicture(safeUser);
     return resolved as Omit<User, 'password'>;
   }
@@ -405,11 +588,16 @@ export class AuthService {
    * Replaces the stored S3 key in `profilePicture` with a short-lived (15 min) presigned GET URL.
    * If the field is null or already a full URL (legacy), it is returned as-is.
    */
-  private async resolveProfilePicture<T extends { profilePicture?: string | null }>(user: T): Promise<T> {
+  private async resolveProfilePicture<
+    T extends { profilePicture?: string | null },
+  >(user: T): Promise<T> {
     if (!user.profilePicture || user.profilePicture.startsWith('http')) {
       return user;
     }
-    const signedUrl = await this.s3Service.getPresignedDownloadUrl(user.profilePicture, 900);
+    const signedUrl = await this.s3Service.getPresignedDownloadUrl(
+      user.profilePicture,
+      900,
+    );
     return { ...user, profilePicture: signedUrl };
   }
 }

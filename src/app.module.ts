@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ScheduleModule } from '@nestjs/schedule';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -10,18 +11,25 @@ import { DevelopmentOptionsModule } from './development-options/development-opti
 import { TokenBalancesModule } from './token-balances/token-balances.module';
 import { TokenRequestsModule } from './token-requests/token-requests.module';
 import { CoachAvailabilityModule } from './coach-availability/coach-availability.module';
+import { CalendarModule } from './calendar/calendar.module';
 import { UsersModule } from './users/users.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { TutorialsModule } from './tutorials/tutorials.module';
+import { ChatModule } from './chat/chat.module';
+import { CommunitiesModule } from './communities/communities.module';
+import { CommunityModule } from './community/community.module';
+import { AnalyticsModule } from './analytics/analytics.module';
+import { AnnouncementsModule } from './announcements/announcements.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
-import { databaseConfig, s3Config, sesConfig } from './config';
+import { databaseConfig, s3Config, sesConfig, anthropicConfig } from './config';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
-      load: [databaseConfig, s3Config, sesConfig],
+      load: [databaseConfig, s3Config, sesConfig, anthropicConfig],
     }),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
@@ -38,14 +46,22 @@ import { databaseConfig, s3Config, sesConfig } from './config';
       }),
       inject: [ConfigService],
     }),
+    ScheduleModule.forRoot(),
     AuthModule,
     CommonModule,
     DevelopmentOptionsModule,
     TokenBalancesModule,
     TokenRequestsModule,
     CoachAvailabilityModule,
+    CalendarModule,
     UsersModule,
     NotificationsModule,
+    TutorialsModule,
+    ChatModule,
+    CommunitiesModule,
+    CommunityModule,
+    AnalyticsModule,
+    AnnouncementsModule,
   ],
   controllers: [AppController],
   providers: [

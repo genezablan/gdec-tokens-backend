@@ -7,20 +7,29 @@ import { CoachingSession } from '../entities/coaching-session.entity';
 import { CoachAvailability } from '../entities/coach-availability.entity';
 import { TokenRequestsService } from './token-requests.service';
 import { CoachingSessionsService } from './coaching-sessions.service';
+import { ApprovalSlaService } from './approval-sla.service';
 import { TokenRequestsController } from './token-requests.controller';
 import { TokenBalancesModule } from '../token-balances/token-balances.module';
 import { CommonModule } from '../common/common.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { CalendarModule } from '../calendar/calendar.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([TokenRequest, User, DevelopmentOption, CoachingSession, CoachAvailability]),
+    TypeOrmModule.forFeature([
+      TokenRequest,
+      User,
+      DevelopmentOption,
+      CoachingSession,
+      CoachAvailability,
+    ]),
     TokenBalancesModule,
     CommonModule, // provides S3Service
     NotificationsModule,
+    CalendarModule, // provides CalendarService (Outlook push sync)
   ],
   controllers: [TokenRequestsController],
-  providers: [TokenRequestsService, CoachingSessionsService],
+  providers: [TokenRequestsService, CoachingSessionsService, ApprovalSlaService],
   exports: [TokenRequestsService, CoachingSessionsService],
 })
 export class TokenRequestsModule {}

@@ -11,6 +11,7 @@ import { DevelopmentOption } from '../entities/development-option.entity';
 import { UpdateDevelopmentOptionDto } from './dto/update-development-option.dto';
 import { DevelopmentOptionType } from '../common/enums';
 import { S3Service } from '../common/services/s3.service';
+import { TokenRequestsService } from '../token-requests/token-requests.service';
 
 @Injectable()
 export class DevelopmentOptionsService implements OnApplicationBootstrap {
@@ -20,6 +21,7 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
     @InjectRepository(DevelopmentOption)
     private readonly developmentOptionRepository: Repository<DevelopmentOption>,
     private readonly s3Service: S3Service,
+    private readonly tokenRequestsService: TokenRequestsService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -73,10 +75,27 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
     updatedById: string,
   ): Promise<DevelopmentOption> {
     const option = await this.findOne(id);
+    const hrApprovalRemoved =
+      option.requiresHrApproval === true && dto.requiresHrApproval === false;
 
     Object.assign(option, dto, { updatedById });
 
-    return this.developmentOptionRepository.save(option);
+    const saved = await this.developmentOptionRepository.save(option);
+
+    // Requests already past the manager's decision are waiting on an HR step
+    // that no longer exists. Nothing else will ever move them, so finalize them
+    // here rather than leaving them stranded in the HR queue.
+    if (hrApprovalRemoved) {
+      const { finalized, skipped } =
+        await this.tokenRequestsService.finalizeRequestsNoLongerAwaitingHr(id);
+      if (finalized || skipped) {
+        this.logger.log(
+          `HR approval removed from "${saved.name}": finalized ${finalized} request(s) awaiting HR, skipped ${skipped}`,
+        );
+      }
+    }
+
+    return saved;
   }
 
   /**
@@ -171,6 +190,8 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
           'Exchange 1 token for 1 OTJ or Special Project (1–3 months).',
         tokenCost: 1,
         isActive: true,
+        // Manager approval is final — only Learning Subsidy escalates to HR.
+        requiresHrApproval: false,
         rules: {
           consecutiveYearRepeatAllowed: false,
           features: [
@@ -186,6 +207,8 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
           'Exchange 2 tokens for a coaching cycle of 3 sessions with the same coach.',
         tokenCost: 2,
         isActive: true,
+        // Coach approval is final — only Learning Subsidy escalates to HR.
+        requiresHrApproval: false,
         rules: {
           sessionsRequired: 3,
           sameCoachRequired: true,
@@ -199,6 +222,8 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
           '1 token = ₱1,000 subsidy for learning and development. Maximum of ₱3,000 (3 tokens).',
         tokenCost: 3,
         isActive: true,
+        // The one option that requires HR sign-off after the manager approves.
+        requiresHrApproval: true,
         rules: {
           subsidyPerToken: 1000,
           maxSubsidyAmount: 3000,
@@ -216,6 +241,9 @@ export class DevelopmentOptionsService implements OnApplicationBootstrap {
       if (exists) {
         // Merge seed rules into existing record so new fields (e.g. features) are added
         // without overwriting admin-customized values like tokenCost or isActive.
+        // requiresHrApproval is deliberately in that same "don't overwrite" set —
+        // Migration1785700000000 sets the correct baseline once, and admins own it
+        // from then on.
         const mergedRules = {
           ...(data.rules as object),
           ...(exists.rules as object),

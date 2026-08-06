@@ -28,5 +28,9 @@ export class UpdateDevelopmentOptionDto {
   isActive?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  requiresHrApproval?: boolean;
+
+  @IsOptional()
   rules?: Record<string, unknown>;
 }
