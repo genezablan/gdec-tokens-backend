@@ -3,7 +3,6 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Community } from '../entities/community.entity';
 import { CommunityMember } from '../entities/community-member.entity';
 import { CommunityRequest } from '../entities/community-request.entity';
-import { CommunityInvitation } from '../entities/community-invitation.entity';
 import { CommunityResource } from '../entities/community-resource.entity';
 import { Post } from '../entities/post.entity';
 import { User } from '../entities/user.entity';
@@ -21,7 +20,6 @@ import { CommonModule } from '../common/common.module';
       Community,
       CommunityMember,
       CommunityRequest,
-      CommunityInvitation,
       CommunityResource,
       Post,
       User,

@@ -305,23 +305,22 @@ export class CommunityNotifier {
   }
 
   /**
-   * Tell people they have been invited to a community. In-app only for now —
-   * there is no invitation email template, and inventing one here would put an
-   * untested send in the path of every invite.
+   * Tell people a community admin added them. There is no decision to make —
+   * they are already in — so this is informational, with a link to look at it.
    */
-  async invited(
+  async addedToCommunity(
     community: Community,
     userIds: string[],
-    invitedBy: User,
+    addedBy: User,
   ): Promise<void> {
     try {
-      const inviter =
-        invitedBy.fullName || invitedBy.firstName || 'A colleague';
+      const who = addedBy.fullName || addedBy.firstName || 'A colleague';
+      const ids = unique(userIds);
       await Promise.all(
-        unique(userIds).map((userId) =>
+        ids.map((userId) =>
           this.persist(userId, {
-            title: `Invitation to ${community.name}`,
-            message: `${inviter} invited you to join ${community.name}`,
+            title: `Added to ${community.name}`,
+            message: `${who} added you to ${community.name}`,
             type: NotificationType.INFO,
             metadata: {
               deeplink: `/communities/${community.id}`,
@@ -330,33 +329,23 @@ export class CommunityNotifier {
           }),
         ),
       );
-    } catch (err) {
-      this.logger.warn(`invited notify failed: ${asMessage(err)}`);
-    }
-  }
 
-  /** Tell the admin who sent an invitation how it was answered. */
-  async inviteDecision(
-    community: Community,
-    inviterId: string,
-    invitee: User,
-    accepted: boolean,
-  ): Promise<void> {
-    try {
-      const who = invitee.fullName || invitee.firstName || 'Someone';
-      await this.persist(inviterId, {
-        title: accepted ? 'Invitation accepted' : 'Invitation declined',
-        message: accepted
-          ? `${who} joined ${community.name}`
-          : `${who} declined your invitation to ${community.name}`,
-        type: accepted ? NotificationType.SUCCESS : NotificationType.INFO,
-        metadata: {
-          deeplink: `/communities/${community.id}`,
-          communityId: community.id,
-        },
-      });
+      // Email too: someone not in the app that day would otherwise not know
+      // they are now receiving a community's posts.
+      const added = await this.activeUsersByIds(ids);
+      await Promise.all(
+        added.map((member) =>
+          this.email.sendAddedToCommunityEmail({
+            to: member.email,
+            recipientName: member.firstName || member.fullName,
+            communityName: community.name,
+            addedByName: who,
+            communityId: community.id,
+          }),
+        ),
+      );
     } catch (err) {
-      this.logger.warn(`inviteDecision notify failed: ${asMessage(err)}`);
+      this.logger.warn(`addedToCommunity notify failed: ${asMessage(err)}`);
     }
   }
 

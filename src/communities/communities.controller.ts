@@ -12,7 +12,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { CommunitiesService } from './communities.service';
-import { InviteMembersDto } from './dto/invite-members.dto';
+import { AddMembersDto } from './dto/add-members.dto';
 import type { CommunityFilter } from './communities.service';
 import { CreateCommunityDto } from './dto/create-community.dto';
 import { UpdateCommunityDto } from './dto/update-community.dto';
@@ -149,57 +149,17 @@ export class CommunitiesController {
     return this.communitiesService.declineRequest(user, id, userId);
   }
 
-  // ─── Invitations ────────────────────────────────────────────────────────────
-
   /**
-   * GET /communities/invitations/mine — the caller's pending invitations.
-   *
-   * Declared before any `:id` route: Nest matches in declaration order, so a
-   * param route above this would swallow "invitations" as an id.
+   * POST /communities/:id/members — admin adds people directly.
+   * Body: { userIds: string[], role?: 'member' | 'admin' }.
    */
-  @Get('invitations/mine')
-  listMyInvitations(@CurrentUser() user: User) {
-    return this.communitiesService.listMyInvitations(user);
-  }
-
-  /** POST /communities/:id/invitations — admin only. Body: { userIds: string[] }. */
-  @Post(':id/invitations')
+  @Post(':id/members')
   @HttpCode(HttpStatus.OK)
-  invite(
+  addMembers(
     @CurrentUser() user: User,
     @Param('id') id: string,
-    @Body() dto: InviteMembersDto,
+    @Body() dto: AddMembersDto,
   ) {
-    return this.communitiesService.invite(user, id, dto.userIds);
-  }
-
-  /** GET /communities/:id/invitations — admin only. */
-  @Get(':id/invitations')
-  listInvitations(@CurrentUser() user: User, @Param('id') id: string) {
-    return this.communitiesService.listInvitations(user, id);
-  }
-
-  /** DELETE /communities/:id/invitations/:userId — admin withdraws an invitation. */
-  @Delete(':id/invitations/:userId')
-  revokeInvitation(
-    @CurrentUser() user: User,
-    @Param('id') id: string,
-    @Param('userId') userId: string,
-  ) {
-    return this.communitiesService.revokeInvitation(user, id, userId);
-  }
-
-  /** POST /communities/:id/invitations/accept — the invitee joins. */
-  @Post(':id/invitations/accept')
-  @HttpCode(HttpStatus.OK)
-  acceptInvitation(@CurrentUser() user: User, @Param('id') id: string) {
-    return this.communitiesService.acceptInvitation(user, id);
-  }
-
-  /** POST /communities/:id/invitations/decline — the invitee says no. */
-  @Post(':id/invitations/decline')
-  @HttpCode(HttpStatus.OK)
-  declineInvitation(@CurrentUser() user: User, @Param('id') id: string) {
-    return this.communitiesService.declineInvitation(user, id);
+    return this.communitiesService.addMembers(user, id, dto.userIds, dto.role);
   }
 }

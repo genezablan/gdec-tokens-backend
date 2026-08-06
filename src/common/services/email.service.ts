@@ -1513,6 +1513,35 @@ export class EmailService {
     });
   }
 
+  /**
+   * [TO THE PERSON ADDED] A community admin added them to a community.
+   *
+   * Informational, not a request — they are already a member. The link goes to
+   * the community so they can see what they have joined, and leave if it is not
+   * for them.
+   */
+  async sendAddedToCommunityEmail(opts: {
+    to: string;
+    recipientName: string;
+    communityName: string;
+    addedByName: string;
+    communityId: string;
+  }): Promise<void> {
+    const { to, recipientName, communityName, addedByName, communityId } = opts;
+    const content = `
+      <p style="margin:0 0 20px;">Hi <strong>${this.escapeHtml(recipientName)}</strong>,</p>
+      <p style="margin:0 0 20px;color:${BRAND.textDark};"><strong>${this.escapeHtml(addedByName)}</strong> added you to <strong>${this.escapeHtml(communityName)}</strong> on Great Deals Academy. You will now see its posts in your feed.</p>
+      ${this.button('View Community', `${this.frontendUrl}/communities/${encodeURIComponent(communityId)}`, BRAND.primary)}
+      <p style="margin:20px 0 0;color:${BRAND.textMuted};font-size:13px;">If it is not relevant to you, you can leave the community at any time.</p>
+    `;
+    await this.sendEmail({
+      to,
+      subject: `You've been added to ${communityName}`,
+      htmlBody: this.buildTemplate(content),
+      textBody: `Hi ${recipientName},\n\n${addedByName} added you to ${communityName} on Great Deals Academy. You will now see its posts in your feed.\n\nIf it is not relevant to you, you can leave the community at any time.\n\nBest regards,\nGreat Deals Academy`,
+    });
+  }
+
   // ─── Tutorial Notifications ─────────────────────────────────────────────────
 
   /**

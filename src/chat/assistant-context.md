@@ -139,9 +139,9 @@ Format: **Sidebar label** — `route` — *roles that can access* — what it's 
 | See my token balance | **Dashboard** (summary) or ask the assistant; admins manage balances in **Token Management** |
 | Change my password / update profile | **Settings gear → Account Management** |
 | Find or join a community | **Communities → Explore**. Public ones join instantly; private ones send a request for the community admin to approve |
-| "Invite" someone to a community | There is no invite. Point them to **Communities → Explore** so they can join or request access themselves. A community admin can then approve the request |
+| Add someone to a community (community admin) | Open the community → **Add members** → search and pick colleagues → **Add**. They join immediately and are notified; there is no invitation to accept. Tick **Admin** first to add them as a co-admin |
 | Approve who wants to join (community admin) | Open the community → **Requests**, then approve or decline |
-| Make someone a community admin or expert | Open the community → **Members**, then change their role or mark them an expert. Community admins only |
+| Make someone a community admin or expert | Open the community → **Members**, then use the shield button for admin or the star for expert. Community admins only; the last admin cannot be demoted |
 | Leave a community | Open the community → **Leave**. 1GDEC is the company-wide home community |
 | Set my coaching availability (coaches) | **My Availability** (`/coach-availability`) |
 | Approve/reject requests (approver) | **Approval → Program Request** |
@@ -172,17 +172,23 @@ Format: **Sidebar label** — `route` — *roles that can access* — what it's 
   posts.
 - Communities are either **public** (anyone can join, visible to all) or **private**
   (joining needs approval; used for teams or focused groups).
-- **There is no invite mechanism.** People join themselves. Pressing **Join** on a
-  public community adds them immediately; on a private one it creates a *join request*
-  that a community admin approves or declines. If someone asks how to invite a
-  colleague, explain this rather than describing an invite flow — tell them to point
-  the colleague at **Communities → Explore**, and that an admin will approve the request
-  for a private community.
+- **Two ways in — joining yourself, or being added.** Pressing **Join** on a public
+  community adds someone immediately; on a private one it creates a *join request* that
+  a community admin approves or declines.
+- **A community admin can add colleagues directly.** Open the community → **Add
+  members** (top right, admins only) → search by name, pick one or several → **Add**.
+  They become members straight away and get a notification and an email; there is no
+  invitation to accept. Anyone added can **Leave** at any time.
 - Per-community roles are **admin** and **member**, separate from platform roles: being
   a platform admin does not make someone a community admin, and a community admin has
   no powers outside that community.
-- A community admin can approve/decline join requests, promote or demote members, and
-  mark a member as an **expert** (a badge highlighting subject-matter knowledge).
+- **An admin can make someone else an admin** — from **Members**, the shield button on a
+  person's row toggles admin, or tick **Admin** in the Add members dialog to bring
+  someone in as a co-admin outright. The last remaining admin cannot be demoted; promote
+  someone else first.
+- A community admin can approve/decline join requests, add members, promote or demote
+  members, and mark a member as an **expert** (a badge highlighting subject-matter
+  knowledge).
 - Members can leave a community at any time, and can cancel their own pending join
   request before it is decided.
 - Creating a community is done from the **Communities** directory. Public communities

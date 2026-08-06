@@ -1,5 +1,6 @@
 import {
   Injectable,
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   NotFoundException,
@@ -10,7 +11,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { Community } from '../entities/community.entity';
 import { CommunityMember } from '../entities/community-member.entity';
 import { CommunityRequest } from '../entities/community-request.entity';
-import { CommunityInvitation } from '../entities/community-invitation.entity';
 import { CommunityResource } from '../entities/community-resource.entity';
 import { User } from '../entities/user.entity';
 import { CommunityPrivacy, CommunityRole } from '../common/enums';
@@ -22,10 +22,8 @@ import { UpdateCommunityDto } from './dto/update-community.dto';
 import { ReplaceResourcesDto } from './dto/community-resource.dto';
 import {
   ApiCommunity,
-  ApiInvitation,
   ApiJoinRequest,
   ApiMember,
-  ApiMyInvitation,
   CommunityMapper,
 } from './community.mapper';
 
@@ -40,8 +38,6 @@ export class CommunitiesService {
     private readonly memberRepo: Repository<CommunityMember>,
     @InjectRepository(CommunityRequest)
     private readonly requestRepo: Repository<CommunityRequest>,
-    @InjectRepository(CommunityInvitation)
-    private readonly invitationRepo: Repository<CommunityInvitation>,
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     @InjectRepository(CommunityResource)
@@ -242,6 +238,20 @@ export class CommunitiesService {
     });
     if (!member) throw new NotFoundException('User is not a member');
 
+    // Demoting the only admin leaves the community with nobody who can add
+    // members, approve requests, or promote anyone back — only a platform admin
+    // could unstick it. Cheap to prevent, tedious to recover from.
+    if (member.role === CommunityRole.ADMIN && role !== CommunityRole.ADMIN) {
+      const admins = await this.memberRepo.count({
+        where: { communityId: id, role: CommunityRole.ADMIN },
+      });
+      if (admins <= 1) {
+        throw new BadRequestException(
+          'This is the only admin — make someone else an admin first',
+        );
+      }
+    }
+
     member.role = role;
     await this.memberRepo.save(member);
     return this.listMembers(user, id);
@@ -403,182 +413,65 @@ export class CommunitiesService {
     return { requests: await this.listRequests(user, id) };
   }
 
-  // ─── Invitations ────────────────────────────────────────────────────────────
-  // The mirror of join requests: an admin invites, the invitee decides. Accepting
-  // is always the invitee's action — an invitation never grants membership on its
-  // own, so nobody ends up in a community they did not choose.
+  // ─── Adding members ─────────────────────────────────────────────────────────
 
   /**
-   * POST /communities/:id/invitations — admin only.
+   * POST /communities/:id/members — admin adds people directly.
    *
-   * Reports a per-user outcome rather than failing the batch: inviting five
-   * people where one is already a member should invite the other four, not
-   * reject the lot.
+   * Direct-add rather than invite-and-accept, matching Viva Engage: everyone
+   * here is already an employee, so there is nothing to consent to that leaving
+   * (one click) does not already cover. An accept step would only add a surface
+   * for invitations to sit unanswered in.
+   *
+   * Reports a per-user outcome rather than failing the batch, so adding five
+   * people where one is already in adds the other four.
    */
-  async invite(
+  async addMembers(
     user: User,
     id: string,
     userIds: string[],
-  ): Promise<{
-    invited: string[];
-    alreadyMember: string[];
-    alreadyInvited: string[];
-    notFound: string[];
-  }> {
+    role: CommunityRole = CommunityRole.MEMBER,
+  ): Promise<{ added: string[]; alreadyMember: string[]; notFound: string[] }> {
     const community = await this.access.getCommunityOrThrow(id);
     await this.access.assertCommunityAdmin(community, user);
 
     const unique = [...new Set(userIds)];
     const result = {
-      invited: [] as string[],
+      added: [] as string[],
       alreadyMember: [] as string[],
-      alreadyInvited: [] as string[],
       notFound: [] as string[],
     };
     if (unique.length === 0) return result;
 
-    // Three lookups for the whole batch rather than three per invitee.
-    const [users, members, invitations] = await Promise.all([
+    // Two lookups for the whole batch rather than two per person.
+    const [users, members] = await Promise.all([
       this.userRepo.find({
         where: { id: In(unique), isActive: true },
         select: { id: true },
       }),
       this.memberRepo.find({ where: { communityId: id, userId: In(unique) } }),
-      this.invitationRepo.find({
-        where: { communityId: id, userId: In(unique) },
-      }),
     ]);
     const active = new Set(users.map((u) => u.id));
     const isMember = new Set(members.map((m) => m.userId));
-    const isInvited = new Set(invitations.map((i) => i.userId));
 
-    const toCreate: CommunityInvitation[] = [];
+    const toCreate: CommunityMember[] = [];
     for (const userId of unique) {
       if (!active.has(userId)) result.notFound.push(userId);
       else if (isMember.has(userId)) result.alreadyMember.push(userId);
-      else if (isInvited.has(userId)) result.alreadyInvited.push(userId);
       else {
         toCreate.push(
-          this.invitationRepo.create({
-            communityId: id,
-            userId,
-            invitedById: user.id,
-          }),
+          this.memberRepo.create({ communityId: id, userId, role }),
         );
-        result.invited.push(userId);
+        result.added.push(userId);
       }
     }
 
     if (toCreate.length) {
-      await this.invitationRepo.save(toCreate);
-      void this.notifier.invited(community, result.invited, user);
+      await this.memberRepo.save(toCreate);
+      // A pending join request is moot once they are in.
+      await this.requestRepo.delete({ communityId: id, userId: In(result.added) });
+      void this.notifier.addedToCommunity(community, result.added, user);
     }
     return result;
-  }
-
-  /** GET /communities/:id/invitations — admin only. */
-  async listInvitations(user: User, id: string): Promise<ApiInvitation[]> {
-    const community = await this.access.getCommunityOrThrow(id);
-    await this.access.assertCommunityAdmin(community, user);
-
-    const invitations = await this.invitationRepo.find({
-      where: { communityId: id },
-      relations: { user: true },
-      order: { invitedAt: 'ASC' },
-    });
-    return invitations.map((i) => this.mapper.mapInvitation(i));
-  }
-
-  /** GET /communities/invitations/mine — what the caller has been invited to. */
-  async listMyInvitations(user: User): Promise<ApiMyInvitation[]> {
-    const invitations = await this.invitationRepo.find({
-      where: { userId: user.id },
-      relations: { community: true, invitedBy: true },
-      order: { invitedAt: 'DESC' },
-    });
-    return invitations.map((i) => this.mapper.mapMyInvitation(i));
-  }
-
-  /**
-   * POST /communities/:id/invitations/accept — the invitee joins.
-   *
-   * The delete and the insert share a transaction: without it a failure between
-   * them consumes the invitation and leaves the user in neither state, with no
-   * way back in.
-   */
-  async acceptInvitation(user: User, id: string): Promise<ApiCommunity> {
-    const community = await this.access.getCommunityOrThrow(id);
-
-    const invitation = await this.invitationRepo.findOne({
-      where: { communityId: id, userId: user.id },
-    });
-    if (!invitation) throw new NotFoundException('Invitation not found');
-
-    await this.invitationRepo.manager.transaction(async (manager) => {
-      await manager.delete(CommunityInvitation, {
-        communityId: id,
-        userId: user.id,
-      });
-      const already = await manager.findOne(CommunityMember, {
-        where: { communityId: id, userId: user.id },
-      });
-      if (!already) {
-        await manager.save(
-          manager.create(CommunityMember, {
-            communityId: id,
-            userId: user.id,
-            role: CommunityRole.MEMBER,
-          }),
-        );
-      }
-      // A pending join request is moot once they are in.
-      await manager.delete(CommunityRequest, {
-        communityId: id,
-        userId: user.id,
-      });
-    });
-
-    void this.notifier.inviteDecision(
-      community,
-      invitation.invitedById,
-      user,
-      true,
-    );
-    return this.mapper.mapOne(community, user.id);
-  }
-
-  /** POST /communities/:id/invitations/decline — the invitee says no. */
-  async declineInvitation(user: User, id: string): Promise<{ declined: true }> {
-    const community = await this.access.getCommunityOrThrow(id);
-
-    const invitation = await this.invitationRepo.findOne({
-      where: { communityId: id, userId: user.id },
-    });
-    if (!invitation) throw new NotFoundException('Invitation not found');
-
-    await this.invitationRepo.delete({ communityId: id, userId: user.id });
-    void this.notifier.inviteDecision(
-      community,
-      invitation.invitedById,
-      user,
-      false,
-    );
-    return { declined: true };
-  }
-
-  /** DELETE /communities/:id/invitations/:userId — admin withdraws it. */
-  async revokeInvitation(
-    user: User,
-    id: string,
-    targetUserId: string,
-  ): Promise<{ invitations: ApiInvitation[] }> {
-    const community = await this.access.getCommunityOrThrow(id);
-    await this.access.assertCommunityAdmin(community, user);
-
-    await this.invitationRepo.delete({
-      communityId: id,
-      userId: targetUserId,
-    });
-    return { invitations: await this.listInvitations(user, id) };
   }
 }
