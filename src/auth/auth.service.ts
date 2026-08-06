@@ -2,6 +2,7 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
+  ConflictException,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -372,9 +373,19 @@ export class AuthService {
       throw new BadRequestException('The selected supervisor does not exist');
     }
 
-    // Auto-generate employeeId: count all users and pad to 3 digits
-    const count = await this.userRepository.count();
-    const employeeId = `GDC-${String(count + 1).padStart(3, '0')}`;
+    // Auto-generate employeeId from the highest GDC-nnn already issued.
+    //
+    // This used to be `count() + 1`, which assumes every user has a GDC-nnn id
+    // and that they run contiguously from 1. Neither holds: imported staff carry
+    // ids like `202208-09` and `OD-067`, so on production 398 users yielded
+    // GDC-399 — an id that already existed. Registration failed with a unique
+    // violation surfacing as a 500, for everyone, every time.
+    const highest = await this.userRepository
+      .createQueryBuilder('u')
+      .select('MAX(SUBSTRING(u."employeeId" FROM 5)::int)', 'max')
+      .where(`u."employeeId" ~ '^GDC-[0-9]+$'`)
+      .getRawOne<{ max: number | null }>();
+    const employeeId = `GDC-${String((highest?.max ?? 0) + 1).padStart(3, '0')}`;
 
     const hashedPassword = await bcrypt.hash(dto.password, 10);
 
@@ -394,7 +405,31 @@ export class AuthService {
       isPasswordChanged: true, // They set their own password at registration
     });
 
-    await this.userRepository.save(user);
+    // Safety net. The id above is derived, not locked, so two registrations
+    // racing can still pick the same number — and any future drift in the id
+    // format must not resurface as a 500. Retry once against a freshly-read
+    // maximum, then fail with something the caller can act on.
+    try {
+      await this.userRepository.save(user);
+    } catch (err: unknown) {
+      const pgCode = (err as { code?: string })?.code;
+      if (pgCode !== '23505') throw err;
+
+      const retry = await this.userRepository
+        .createQueryBuilder('u')
+        .select('MAX(SUBSTRING(u."employeeId" FROM 5)::int)', 'max')
+        .where(`u."employeeId" ~ '^GDC-[0-9]+$'`)
+        .getRawOne<{ max: number | null }>();
+      user.employeeId = `GDC-${String((retry?.max ?? 0) + 1).padStart(3, '0')}`;
+
+      try {
+        await this.userRepository.save(user);
+      } catch {
+        throw new ConflictException(
+          'Could not allocate an employee ID. Please try again.',
+        );
+      }
+    }
 
     this.emailService
       .sendRegistrationSubmittedEmail({
