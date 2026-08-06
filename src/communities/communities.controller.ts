@@ -12,6 +12,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { CommunitiesService } from './communities.service';
+import { AddMembersDto } from './dto/add-members.dto';
 import type { CommunityFilter } from './communities.service';
 import { CreateCommunityDto } from './dto/create-community.dto';
 import { UpdateCommunityDto } from './dto/update-community.dto';
@@ -146,5 +147,19 @@ export class CommunitiesController {
     @Param('userId') userId: string,
   ) {
     return this.communitiesService.declineRequest(user, id, userId);
+  }
+
+  /**
+   * POST /communities/:id/members — admin adds people directly.
+   * Body: { userIds: string[], role?: 'member' | 'admin' }.
+   */
+  @Post(':id/members')
+  @HttpCode(HttpStatus.OK)
+  addMembers(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @Body() dto: AddMembersDto,
+  ) {
+    return this.communitiesService.addMembers(user, id, dto.userIds, dto.role);
   }
 }

@@ -1,11 +1,12 @@
 import {
   Injectable,
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Brackets, Repository } from 'typeorm';
+import { Brackets, In, Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 import { Community } from '../entities/community.entity';
 import { CommunityMember } from '../entities/community-member.entity';
@@ -37,6 +38,8 @@ export class CommunitiesService {
     private readonly memberRepo: Repository<CommunityMember>,
     @InjectRepository(CommunityRequest)
     private readonly requestRepo: Repository<CommunityRequest>,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
     @InjectRepository(CommunityResource)
     private readonly resourceRepo: Repository<CommunityResource>,
     private readonly access: CommunityAccessService,
@@ -235,6 +238,20 @@ export class CommunitiesService {
     });
     if (!member) throw new NotFoundException('User is not a member');
 
+    // Demoting the only admin leaves the community with nobody who can add
+    // members, approve requests, or promote anyone back — only a platform admin
+    // could unstick it. Cheap to prevent, tedious to recover from.
+    if (member.role === CommunityRole.ADMIN && role !== CommunityRole.ADMIN) {
+      const admins = await this.memberRepo.count({
+        where: { communityId: id, role: CommunityRole.ADMIN },
+      });
+      if (admins <= 1) {
+        throw new BadRequestException(
+          'This is the only admin — make someone else an admin first',
+        );
+      }
+    }
+
     member.role = role;
     await this.memberRepo.save(member);
     return this.listMembers(user, id);
@@ -394,5 +411,67 @@ export class CommunitiesService {
       void this.notifier.requestDecision(community, targetUserId, false);
     }
     return { requests: await this.listRequests(user, id) };
+  }
+
+  // ─── Adding members ─────────────────────────────────────────────────────────
+
+  /**
+   * POST /communities/:id/members — admin adds people directly.
+   *
+   * Direct-add rather than invite-and-accept, matching Viva Engage: everyone
+   * here is already an employee, so there is nothing to consent to that leaving
+   * (one click) does not already cover. An accept step would only add a surface
+   * for invitations to sit unanswered in.
+   *
+   * Reports a per-user outcome rather than failing the batch, so adding five
+   * people where one is already in adds the other four.
+   */
+  async addMembers(
+    user: User,
+    id: string,
+    userIds: string[],
+    role: CommunityRole = CommunityRole.MEMBER,
+  ): Promise<{ added: string[]; alreadyMember: string[]; notFound: string[] }> {
+    const community = await this.access.getCommunityOrThrow(id);
+    await this.access.assertCommunityAdmin(community, user);
+
+    const unique = [...new Set(userIds)];
+    const result = {
+      added: [] as string[],
+      alreadyMember: [] as string[],
+      notFound: [] as string[],
+    };
+    if (unique.length === 0) return result;
+
+    // Two lookups for the whole batch rather than two per person.
+    const [users, members] = await Promise.all([
+      this.userRepo.find({
+        where: { id: In(unique), isActive: true },
+        select: { id: true },
+      }),
+      this.memberRepo.find({ where: { communityId: id, userId: In(unique) } }),
+    ]);
+    const active = new Set(users.map((u) => u.id));
+    const isMember = new Set(members.map((m) => m.userId));
+
+    const toCreate: CommunityMember[] = [];
+    for (const userId of unique) {
+      if (!active.has(userId)) result.notFound.push(userId);
+      else if (isMember.has(userId)) result.alreadyMember.push(userId);
+      else {
+        toCreate.push(
+          this.memberRepo.create({ communityId: id, userId, role }),
+        );
+        result.added.push(userId);
+      }
+    }
+
+    if (toCreate.length) {
+      await this.memberRepo.save(toCreate);
+      // A pending join request is moot once they are in.
+      await this.requestRepo.delete({ communityId: id, userId: In(result.added) });
+      void this.notifier.addedToCommunity(community, result.added, user);
+    }
+    return result;
   }
 }

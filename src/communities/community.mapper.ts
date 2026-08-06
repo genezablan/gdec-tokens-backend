@@ -145,11 +145,16 @@ export class CommunityMapper {
 
   /** Map a membership row (its `user` relation must be loaded) to ApiMember. */
   mapMember(member: CommunityMember): ApiMember {
-    return { ...toUserBrief(member.user), role: member.role, expert: member.expert };
+    return {
+      ...toUserBrief(member.user),
+      role: member.role,
+      expert: member.expert,
+    };
   }
 
   /** Map a join-request row (its `user` relation must be loaded) to ApiJoinRequest. */
   mapJoinRequest(request: CommunityRequest): ApiJoinRequest {
     return { ...toUserBrief(request.user), requestedAt: request.requestedAt };
   }
+
 }
