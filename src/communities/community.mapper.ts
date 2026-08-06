@@ -4,6 +4,7 @@ import { In, Repository } from 'typeorm';
 import { Community } from '../entities/community.entity';
 import { CommunityMember } from '../entities/community-member.entity';
 import { CommunityRequest } from '../entities/community-request.entity';
+import { CommunityInvitation } from '../entities/community-invitation.entity';
 import { CommunityResource } from '../entities/community-resource.entity';
 import { Post } from '../entities/post.entity';
 import { CommunityPrivacy, CommunityRole, ResourceType } from '../common/enums';
@@ -46,6 +47,21 @@ export interface ApiMember extends UserBrief {
 /** API JoinRequest shape (docs/community.md §3.7). */
 export interface ApiJoinRequest extends UserBrief {
   requestedAt: Date;
+}
+
+/** A pending invitation, as the community admin sees it. */
+export interface ApiInvitation extends UserBrief {
+  invitedAt: Date;
+  invitedById: string;
+}
+
+/** A pending invitation, as the invitee sees it. */
+export interface ApiMyInvitation {
+  communityId: string;
+  communityName: string;
+  privacy: string | null;
+  invitedBy: UserBrief | null;
+  invitedAt: Date;
 }
 
 /**
@@ -145,11 +161,43 @@ export class CommunityMapper {
 
   /** Map a membership row (its `user` relation must be loaded) to ApiMember. */
   mapMember(member: CommunityMember): ApiMember {
-    return { ...toUserBrief(member.user), role: member.role, expert: member.expert };
+    return {
+      ...toUserBrief(member.user),
+      role: member.role,
+      expert: member.expert,
+    };
   }
 
   /** Map a join-request row (its `user` relation must be loaded) to ApiJoinRequest. */
   mapJoinRequest(request: CommunityRequest): ApiJoinRequest {
     return { ...toUserBrief(request.user), requestedAt: request.requestedAt };
+  }
+
+  /**
+   * Map an invitation to the admin-facing shape: who was invited, and when.
+   * Its `user` relation must be loaded.
+   */
+  mapInvitation(invitation: CommunityInvitation): ApiInvitation {
+    return {
+      ...toUserBrief(invitation.user),
+      invitedAt: invitation.invitedAt,
+      invitedById: invitation.invitedById,
+    };
+  }
+
+  /**
+   * Map an invitation to the invitee-facing shape — they care which community it
+   * is and who asked, not about themselves. Needs `community` and `invitedBy`.
+   */
+  mapMyInvitation(invitation: CommunityInvitation): ApiMyInvitation {
+    return {
+      communityId: invitation.communityId,
+      communityName: invitation.community?.name ?? invitation.communityId,
+      privacy: invitation.community?.privacy ?? null,
+      invitedBy: invitation.invitedBy
+        ? toUserBrief(invitation.invitedBy)
+        : null,
+      invitedAt: invitation.invitedAt,
+    };
   }
 }

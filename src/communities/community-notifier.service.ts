@@ -55,8 +55,12 @@ export class CommunityNotifier {
     const deeplink = `/community/${postId}`;
     try {
       // Persistent notifications for mentions & praise (exclude self).
-      const mentioned = unique(params.mentionedUserIds).filter((u) => u !== authorId);
-      const praised = unique(params.praisedUserIds).filter((u) => u !== authorId);
+      const mentioned = unique(params.mentionedUserIds).filter(
+        (u) => u !== authorId,
+      );
+      const praised = unique(params.praisedUserIds).filter(
+        (u) => u !== authorId,
+      );
 
       await Promise.all([
         ...mentioned.map((userId) =>
@@ -115,7 +119,16 @@ export class CommunityNotifier {
     postTitle?: string | null;
     createdAt?: Date;
   }): Promise<void> {
-    const { mentioned, praised, authorName, communityName, excerpt, postId, postTitle, createdAt } = params;
+    const {
+      mentioned,
+      praised,
+      authorName,
+      communityName,
+      excerpt,
+      postId,
+      postTitle,
+      createdAt,
+    } = params;
     const [mentionUsers, praiseUsers] = await Promise.all([
       this.activeUsersByIds(mentioned),
       this.activeUsersByIds(praised),
@@ -174,7 +187,8 @@ export class CommunityNotifier {
     commenterName: string;
     mentionedUserIds?: string[];
   }): Promise<void> {
-    const { postId, communityId, postAuthorId, commenterId, commenterName } = params;
+    const { postId, communityId, postAuthorId, commenterId, commenterName } =
+      params;
     const deeplink = `/community/${postId}`;
     try {
       // Reply notification to the post author (not for self-comments).
@@ -231,7 +245,10 @@ export class CommunityNotifier {
   // ─── Membership events ──────────────────────────────────────────────────────
 
   /** A user asked to join a private community → notify its admins. */
-  async joinRequested(community: Community, requesterName: string): Promise<void> {
+  async joinRequested(
+    community: Community,
+    requesterName: string,
+  ): Promise<void> {
     try {
       const admins = await this.memberRepo.find({
         where: { communityId: community.id, role: CommunityRole.ADMIN },
@@ -242,7 +259,10 @@ export class CommunityNotifier {
           this.persist(a.userId, {
             title: 'New join request',
             message: `${requesterName} requested to join ${community.name}`,
-            metadata: { deeplink: `/communities/${community.id}`, communityId: community.id },
+            metadata: {
+              deeplink: `/communities/${community.id}`,
+              communityId: community.id,
+            },
           }),
         ),
       );
@@ -264,7 +284,10 @@ export class CommunityNotifier {
           ? `You're now a member of ${community.name}`
           : `Your request to join ${community.name} was declined`,
         type: approved ? NotificationType.SUCCESS : NotificationType.INFO,
-        metadata: { deeplink: `/communities/${community.id}`, communityId: community.id },
+        metadata: {
+          deeplink: `/communities/${community.id}`,
+          communityId: community.id,
+        },
       });
 
       const target = await this.activeUserById(targetUserId);
@@ -281,6 +304,62 @@ export class CommunityNotifier {
     }
   }
 
+  /**
+   * Tell people they have been invited to a community. In-app only for now —
+   * there is no invitation email template, and inventing one here would put an
+   * untested send in the path of every invite.
+   */
+  async invited(
+    community: Community,
+    userIds: string[],
+    invitedBy: User,
+  ): Promise<void> {
+    try {
+      const inviter =
+        invitedBy.fullName || invitedBy.firstName || 'A colleague';
+      await Promise.all(
+        unique(userIds).map((userId) =>
+          this.persist(userId, {
+            title: `Invitation to ${community.name}`,
+            message: `${inviter} invited you to join ${community.name}`,
+            type: NotificationType.INFO,
+            metadata: {
+              deeplink: `/communities/${community.id}`,
+              communityId: community.id,
+            },
+          }),
+        ),
+      );
+    } catch (err) {
+      this.logger.warn(`invited notify failed: ${asMessage(err)}`);
+    }
+  }
+
+  /** Tell the admin who sent an invitation how it was answered. */
+  async inviteDecision(
+    community: Community,
+    inviterId: string,
+    invitee: User,
+    accepted: boolean,
+  ): Promise<void> {
+    try {
+      const who = invitee.fullName || invitee.firstName || 'Someone';
+      await this.persist(inviterId, {
+        title: accepted ? 'Invitation accepted' : 'Invitation declined',
+        message: accepted
+          ? `${who} joined ${community.name}`
+          : `${who} declined your invitation to ${community.name}`,
+        type: accepted ? NotificationType.SUCCESS : NotificationType.INFO,
+        metadata: {
+          deeplink: `/communities/${community.id}`,
+          communityId: community.id,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`inviteDecision notify failed: ${asMessage(err)}`);
+    }
+  }
+
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
   private persist(userId: string, dto: CreateNotificationDto) {
@@ -288,11 +367,12 @@ export class CommunityNotifier {
   }
 
   /** Member user IDs for a community, optionally excluding one user. */
-  private async memberIds(communityId: string, exclude?: string): Promise<string[]> {
+  private async memberIds(
+    communityId: string,
+    exclude?: string,
+  ): Promise<string[]> {
     const rows = await this.memberRepo.find({
-      where: exclude
-        ? { communityId, userId: Not(exclude) }
-        : { communityId },
+      where: exclude ? { communityId, userId: Not(exclude) } : { communityId },
       select: { userId: true },
     });
     return rows.map((r) => r.userId);
