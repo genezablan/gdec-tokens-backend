@@ -135,9 +135,14 @@ Format: **Sidebar label** — `route` — *roles that can access* — what it's 
 | Check a request's status | **My Requests** (use the status tabs) |
 | Cancel a request | **My Requests** — open the request's ⋯ menu. Possible while it's **Pending**, and for Learning Subsidy also while it's **Awaiting HR**. Once approved, tokens are spent and it can't be cancelled |
 | Resubmit a rejected request | **My Requests** — open the rejected request, review remarks, resubmit |
-| Undo an approval/rejection they just made (approver) | **Approval** — the decided row shows **Undo** for 1 hour, replacing the approve/reject buttons |
+| Undo an approval/rejection they just made (approver) | **Approval** — the decided row shows **Undo** for 1 hour, alongside the approve/reject buttons. An approver who is also HR can undo their manager approval *and* take the HR decision on the same request |
 | See my token balance | **Dashboard** (summary) or ask the assistant; admins manage balances in **Token Management** |
 | Change my password / update profile | **Settings gear → Account Management** |
+| Find or join a community | **Communities → Explore**. Public ones join instantly; private ones send a request for the community admin to approve |
+| "Invite" someone to a community | There is no invite. Point them to **Communities → Explore** so they can join or request access themselves. A community admin can then approve the request |
+| Approve who wants to join (community admin) | Open the community → **Requests**, then approve or decline |
+| Make someone a community admin or expert | Open the community → **Members**, then change their role or mark them an expert. Community admins only |
+| Leave a community | Open the community → **Leave**. 1GDEC is the company-wide home community |
 | Set my coaching availability (coaches) | **My Availability** (`/coach-availability`) |
 | Approve/reject requests (approver) | **Approval → Program Request** |
 | Review message posts (admin) | **Approval → Message Request** |
@@ -159,6 +164,29 @@ Format: **Sidebar label** — `route` — *roles that can access* — what it's 
   special project (1–3 months). No consecutive-year repeat of the same task.
 - **Learning Subsidy** — **1 token = ₱1,000** reimbursement for learning & development,
   up to **₱3,000 (3 tokens)**.
+
+### Communities
+
+- **1GDEC** is the company-wide home community. Every active employee is a member
+  automatically — nobody has to join it, and it is the default place for company-wide
+  posts.
+- Communities are either **public** (anyone can join, visible to all) or **private**
+  (joining needs approval; used for teams or focused groups).
+- **There is no invite mechanism.** People join themselves. Pressing **Join** on a
+  public community adds them immediately; on a private one it creates a *join request*
+  that a community admin approves or declines. If someone asks how to invite a
+  colleague, explain this rather than describing an invite flow — tell them to point
+  the colleague at **Communities → Explore**, and that an admin will approve the request
+  for a private community.
+- Per-community roles are **admin** and **member**, separate from platform roles: being
+  a platform admin does not make someone a community admin, and a community admin has
+  no powers outside that community.
+- A community admin can approve/decline join requests, promote or demote members, and
+  mark a member as an **expert** (a badge highlighting subject-matter knowledge).
+- Members can leave a community at any time, and can cancel their own pending join
+  request before it is decided.
+- Creating a community is done from the **Communities** directory. Public communities
+  are restricted to platform admins.
 
 ### Token system
 
