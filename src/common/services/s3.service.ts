@@ -15,15 +15,26 @@ export interface UploadFileResult {
   bucket: string;
 }
 
+/**
+ * Key prefixes the bucket policy exposes to anonymous `s3:GetObject`. Objects
+ * under these are served as plain, never-expiring URLs; everything else
+ * (token-request attachments, HR form templates) stays private and must be
+ * presigned. Keep this list in sync with the bucket policy — widening it here
+ * alone grants nothing, and narrowing the policy alone yields dead URLs.
+ */
+export const PUBLIC_KEY_PREFIXES = ['profile-pictures/', 'tutorials/'];
+
 @Injectable()
 export class S3Service {
   private readonly s3Client: S3Client;
   private readonly bucketName: string;
+  private readonly region: string;
 
   constructor(private readonly configService: ConfigService) {
     const accessKeyId = this.configService.get<string>('s3.accessKeyId');
     const secretAccessKey = this.configService.get<string>('s3.secretAccessKey');
     const region = this.configService.get<string>('s3.region') || 'ap-southeast-1';
+    this.region = region;
     this.bucketName = this.configService.get<string>('s3.bucketName') || '';
 
     if (!accessKeyId || !secretAccessKey || !this.bucketName) {
@@ -37,6 +48,30 @@ export class S3Service {
         secretAccessKey,
       },
     });
+  }
+
+  /** True when `key` lives under a prefix the bucket policy serves publicly. */
+  isPublicKey(key: string): boolean {
+    return PUBLIC_KEY_PREFIXES.some((p) => key.startsWith(p));
+  }
+
+  /**
+   * Permanent, unsigned URL for an object under a public prefix. Each path
+   * segment is encoded so filenames with spaces//unicode still resolve.
+   */
+  publicUrl(key: string): string {
+    const encodedKey = key.split('/').map(encodeURIComponent).join('/');
+    return `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${encodedKey}`;
+  }
+
+  /**
+   * URL a browser can render for a stored object key: a permanent public URL
+   * when the prefix allows it, otherwise a short-lived presigned one.
+   */
+  async resolveObjectUrl(key: string, expiresInSeconds = 900): Promise<string> {
+    return this.isPublicKey(key)
+      ? this.publicUrl(key)
+      : this.getPresignedDownloadUrl(key, expiresInSeconds);
   }
 
   /**
@@ -112,9 +147,10 @@ export class S3Service {
   }
 
   /**
-   * Resolve stored avatar values (S3 object keys) to short-lived presigned GET
-   * URLs, in place. Values already http(s) (e.g. external URLs) are left as-is.
-   * Keys are deduped so each object is signed once. Mutates each item's
+   * Resolve stored avatar values (S3 object keys) to renderable URLs, in place.
+   * `profile-pictures/` is public, so these are permanent unsigned URLs — they
+   * can't expire out from under a cached feed. Values already http(s) (e.g.
+   * external URLs, or legacy rows) are left as-is. Mutates each item's
    * `avatarUrl`. Mirrors the post mapper's avatar resolution for reuse outside
    * the feed (members, profiles, reactors).
    */
@@ -124,10 +160,10 @@ export class S3Service {
     const needs = (u: string | null): u is string => !!u && !u.startsWith('http');
     const keys = [...new Set(items.map((i) => i.avatarUrl).filter(needs))];
     if (keys.length === 0) return;
-    const signed = await Promise.all(
-      keys.map((key) => this.getPresignedDownloadUrl(key, 900)),
+    const resolved = await Promise.all(
+      keys.map((key) => this.resolveObjectUrl(key)),
     );
-    const urlByKey = new Map(keys.map((key, i) => [key, signed[i]]));
+    const urlByKey = new Map(keys.map((key, i) => [key, resolved[i]]));
     for (const item of items) {
       if (needs(item.avatarUrl)) {
         item.avatarUrl = urlByKey.get(item.avatarUrl) ?? item.avatarUrl;

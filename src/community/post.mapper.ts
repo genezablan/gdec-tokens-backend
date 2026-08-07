@@ -374,15 +374,18 @@ export class PostMapper {
 
   /**
    * Stored avatar fields hold S3 *keys* (see auth.service `resolveProfilePicture`).
-   * Replace each key with a short-lived (15 min) presigned GET URL so the UI can
-   * render it directly. Null/empty and already-resolved (`http…`) values are left
-   * as-is. Keys are deduped so a feed page signs each key only once.
+   * Replace each key with a renderable URL — permanent and unsigned, since
+   * `profile-pictures/` is public, so a cached feed can't outlive its avatars.
+   * Null/empty and already-resolved (`http…`) values are left as-is. Keys are
+   * deduped so a feed page resolves each key only once.
    */
   private async resolveAvatarUrls(posts: ApiPost[]): Promise<void> {
     const briefs: { avatarUrl: string | null }[] = [];
     for (const post of posts) {
       briefs.push(post.author, post.community);
-      for (const c of post.comments) briefs.push(c.author);
+      for (const c of post.comments) {
+        briefs.push(c.author, ...c.mentions);
+      }
       for (const m of post.mentions) briefs.push(m);
       for (const p of post.praisedPeople ?? []) briefs.push(p);
     }
@@ -395,10 +398,10 @@ export class PostMapper {
     ];
     if (keys.length === 0) return;
 
-    const signed = await Promise.all(
-      keys.map((key) => this.s3Service.getPresignedDownloadUrl(key, 900)),
+    const resolved = await Promise.all(
+      keys.map((key) => this.s3Service.resolveObjectUrl(key)),
     );
-    const urlByKey = new Map(keys.map((key, i) => [key, signed[i]]));
+    const urlByKey = new Map(keys.map((key, i) => [key, resolved[i]]));
 
     for (const brief of briefs) {
       if (needsResolving(brief.avatarUrl)) {

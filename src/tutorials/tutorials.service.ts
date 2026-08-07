@@ -262,18 +262,20 @@ export class TutorialsService implements OnApplicationBootstrap {
   }
 
   /**
-   * Maps an entity to the API response, swapping S3 keys for short-lived pre-signed URLs.
+   * Maps an entity to the API response, swapping S3 keys for renderable URLs.
+   * `tutorials/` is public, so these come back permanent and unsigned — a long
+   * video can no longer have its URL expire mid-playback.
    */
   private async toResponse(tutorial: Tutorial): Promise<TutorialResponse> {
     const [videoUrl, thumbnailUrl] = await Promise.all([
       tutorial.videoKey
-        ? this.s3Service.getPresignedDownloadUrl(
+        ? this.s3Service.resolveObjectUrl(
             tutorial.videoKey,
             PRESIGNED_URL_TTL_SECONDS,
           )
         : Promise.resolve(null),
       tutorial.thumbnailKey
-        ? this.s3Service.getPresignedDownloadUrl(
+        ? this.s3Service.resolveObjectUrl(
             tutorial.thumbnailKey,
             PRESIGNED_URL_TTL_SECONDS,
           )

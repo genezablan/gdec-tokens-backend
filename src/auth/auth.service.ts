@@ -620,8 +620,9 @@ export class AuthService {
   }
 
   /**
-   * Replaces the stored S3 key in `profilePicture` with a short-lived (15 min) presigned GET URL.
-   * If the field is null or already a full URL (legacy), it is returned as-is.
+   * Replaces the stored S3 key in `profilePicture` with a renderable URL —
+   * permanent and unsigned, since `profile-pictures/` is public. If the field
+   * is null or already a full URL (legacy), it is returned as-is.
    */
   private async resolveProfilePicture<
     T extends { profilePicture?: string | null },
@@ -629,10 +630,7 @@ export class AuthService {
     if (!user.profilePicture || user.profilePicture.startsWith('http')) {
       return user;
     }
-    const signedUrl = await this.s3Service.getPresignedDownloadUrl(
-      user.profilePicture,
-      900,
-    );
-    return { ...user, profilePicture: signedUrl };
+    const url = await this.s3Service.resolveObjectUrl(user.profilePicture);
+    return { ...user, profilePicture: url };
   }
 }

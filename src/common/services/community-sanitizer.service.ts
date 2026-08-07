@@ -8,7 +8,8 @@ import sanitizeHtml from 'sanitize-html';
  * MUST sanitize on write too — never trust client HTML (docs/community.md §3.5).
  *
  * Allowed tags:  p br strong b em i u s ul ol li a code pre blockquote span
- * Allowed attrs: href target rel class
+ * Allowed attrs: href target rel class, plus data-type/data-id/data-label on
+ * span so inline @mention chips keep the user they point at.
  */
 @Injectable()
 export class CommunitySanitizerService {
@@ -19,7 +20,9 @@ export class CommunitySanitizerService {
     ],
     allowedAttributes: {
       a: ['href', 'target', 'rel', 'class'],
-      span: ['class'],
+      // An @mention is a <span class="mention" data-type="mention" data-id=…>.
+      // Without these the chip survives as plain blue text that links nowhere.
+      span: ['class', 'data-type', 'data-id', 'data-label'],
       '*': ['class'],
     },
     // Only safe link protocols; strips javascript:, data:, etc.
