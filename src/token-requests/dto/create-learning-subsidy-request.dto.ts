@@ -80,11 +80,12 @@ export class CreateLearningSubsidyRequestDto {
   developmentOptionId!: string;
 
   /**
-   * Subsidy amount in PHP. Must be a multiple of 1,000, max ₱3,000.
-   * System will calculate tokenCost = amount / 1000.
+   * Subsidy amount in PHP — the training's actual value, max ₱3,000. It is not
+   * restricted to whole tokens: the system charges tokenCost =
+   * Math.ceil(amount / 1000), so a ₱709 course costs 1 token and ₱1,001 costs 2.
    */
   @IsNumber()
-  @Min(1000)
+  @Min(1)
   @Max(3000)
   subsidyAmount!: number;
 
