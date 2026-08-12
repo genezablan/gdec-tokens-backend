@@ -150,10 +150,10 @@ export class ResubmitTokenRequestDto {
 
   // ── learning_subsidy ─────────────────────────────────────────────────────────
 
-  /** Updated subsidy amount in PHP (1000–3000). */
+  /** Updated subsidy amount in PHP — actual value, up to 3000. */
   @IsOptional()
   @IsNumber()
-  @Min(1000)
+  @Min(1)
   @Max(3000)
   subsidyAmount?: number;
 
