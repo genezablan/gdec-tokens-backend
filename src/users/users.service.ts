@@ -16,7 +16,13 @@ import { TokenRequest } from '../entities/token-request.entity';
 import { CoachingSession } from '../entities/coaching-session.entity';
 import { CoachAvailability } from '../entities/coach-availability.entity';
 import { DevelopmentOption } from '../entities/development-option.entity';
-import { CoachingSessionStatus, CommunityRole, UserRole } from '../common/enums';
+import {
+  CoachingSessionStatus,
+  CommunityRole,
+  DevelopmentOptionType,
+  RequestStatus,
+  UserRole,
+} from '../common/enums';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { EmailService } from '../common/services/email.service';
 import { S3Service } from '../common/services/s3.service';
@@ -241,21 +247,44 @@ export class UsersService {
 
   /**
    * Adds the roster's per-coach stats: whether they have any bookable slot left,
-   * and how many sessions they have completed this year. Two grouped queries for
-   * the whole roster rather than a pair per coach.
+   * how many sessions they have completed this year, and how many people they
+   * are currently coaching. Grouped queries for the whole roster rather than a
+   * set per coach.
+   *
+   * `activeCoachees` is deliberately a count and not a list of people. The
+   * roster is visible to every employee, and who is in coaching is otherwise
+   * only known to the two people involved and to admin/HR through Analytics.
+   * A browsing employee needs to know whether a coach has capacity, not who
+   * they are already working with.
    */
   private async withCoachStats<T extends { id: string }>(
     coaches: T[],
-  ): Promise<(T & { isAvailable: boolean; sessionsThisYear: number })[]> {
+  ): Promise<
+    (T & {
+      isAvailable: boolean;
+      sessionsThisYear: number;
+      activeCoachees: number;
+    })[]
+  > {
     if (!coaches.length) return [];
     const ids = coaches.map((c) => c.id);
+
+    // A cycle runs for a fixed number of sessions and is done once they are all
+    // completed. Admins can change that count per development option, so read it
+    // rather than assuming three.
+    const coachingOption = await this.developmentOptionRepo.findOne({
+      where: { type: DevelopmentOptionType.COACHING },
+    });
+    const sessionsPerCycle =
+      Number((coachingOption?.rules as { sessionsRequired?: number })
+        ?.sessionsRequired) || 3;
 
     // "Available" means the same thing here as on the booking screen: at least
     // one active, unbooked, still-upcoming slot (CoachAvailabilityService
     // .findAvailableForCoach). Keep the two in step if that rule changes.
     const today = new Date().toISOString().split('T')[0];
 
-    const [slotRows, sessionRows] = await Promise.all([
+    const [slotRows, sessionRows, coacheeRows] = await Promise.all([
       this.coachAvailabilityRepo
         .createQueryBuilder('a')
         .select('a.coachId', 'coachId')
@@ -279,6 +308,33 @@ export class UsersService {
         })
         .groupBy('s.coachId')
         .getRawMany<{ coachId: string; count: string }>(),
+      // An open cycle is an approved coaching request whose sessions are not
+      // all completed yet. The nominated coach lives in the request's formData,
+      // and DISTINCT guards against one employee holding more than one cycle
+      // with the same coach — the roster counts people, not requests.
+      // Columns are quoted by hand here: TypeORM only rewrites a bare
+      // `alias.property` path, so `r.formData->>'x'` would reach Postgres
+      // unquoted and fold to the non-existent `r.formdata`.
+      this.tokenRequestRepo
+        .createQueryBuilder('r')
+        .select(`r."formData"->>'coachId'`, 'coachId')
+        .addSelect('COUNT(DISTINCT r."employeeId")', 'count')
+        .where(`r."formData"->>'coachId' IN (:...ids)`, { ids })
+        .andWhere('r.type = :type', {
+          type: DevelopmentOptionType.COACHING,
+        })
+        .andWhere('r.status = :approved', { approved: RequestStatus.APPROVED })
+        .andWhere(
+          `(SELECT COUNT(*) FROM coaching_sessions cs
+              WHERE cs."tokenRequestId" = r.id
+                AND cs.status = :completedStatus) < :sessionsPerCycle`,
+          {
+            completedStatus: CoachingSessionStatus.COMPLETED,
+            sessionsPerCycle,
+          },
+        )
+        .groupBy(`r."formData"->>'coachId'`)
+        .getRawMany<{ coachId: string; count: string }>(),
     ]);
 
     const openSlots = new Map(
@@ -287,11 +343,15 @@ export class UsersService {
     const completed = new Map(
       sessionRows.map((r) => [r.coachId, Number(r.count)]),
     );
+    const coachees = new Map(
+      coacheeRows.map((r) => [r.coachId, Number(r.count)]),
+    );
 
     return coaches.map((c) => ({
       ...c,
       isAvailable: (openSlots.get(c.id) ?? 0) > 0,
       sessionsThisYear: completed.get(c.id) ?? 0,
+      activeCoachees: coachees.get(c.id) ?? 0,
     }));
   }
 
