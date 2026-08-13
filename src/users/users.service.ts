@@ -16,7 +16,7 @@ import { TokenRequest } from '../entities/token-request.entity';
 import { CoachingSession } from '../entities/coaching-session.entity';
 import { CoachAvailability } from '../entities/coach-availability.entity';
 import { DevelopmentOption } from '../entities/development-option.entity';
-import { CommunityRole, UserRole } from '../common/enums';
+import { CoachingSessionStatus, CommunityRole, UserRole } from '../common/enums';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { EmailService } from '../common/services/email.service';
 import { S3Service } from '../common/services/s3.service';
@@ -156,9 +156,48 @@ export class UsersService {
       immediateSupervisorId: user.immediateSupervisorId,
       contact: user.contact,
       separationDate: user.separationDate,
+      // Public profile fields. The Roster of Coaches renders these straight off
+      // the list response, so omitting them here makes a saved coach profile
+      // look like it never saved.
+      profilePicture: user.profilePicture,
+      nickname: user.nickname,
+      headline: user.headline,
+      bio: user.bio,
+      specialties: user.specialties,
+      yearsExperience: user.yearsExperience,
+      maxCoachesPerCycle: user.maxCoachesPerCycle,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
+  }
+
+  /**
+   * `safeUser` carries `profilePicture` as the stored S3 key. Read paths that
+   * feed the UI resolve it to a renderable URL first — batched, so a roster of
+   * N coaches costs one resolve per distinct key rather than one per row.
+   */
+  private async withResolvedAvatars<
+    T extends { profilePicture: string | null },
+  >(items: T[]): Promise<T[]> {
+    const needs = (u: string | null): u is string =>
+      !!u && !u.startsWith('http');
+    const keys = [...new Set(items.map((i) => i.profilePicture).filter(needs))];
+    if (!keys.length) return items;
+
+    const resolved = await Promise.all(
+      keys.map((key) => this.s3Service.resolveObjectUrl(key)),
+    );
+    const urlByKey = new Map(keys.map((key, i) => [key, resolved[i]]));
+
+    return items.map((item) =>
+      needs(item.profilePicture)
+        ? {
+            ...item,
+            profilePicture:
+              urlByKey.get(item.profilePicture) ?? item.profilePicture,
+          }
+        : item,
+    );
   }
 
   /**
@@ -191,13 +230,76 @@ export class UsersService {
       order: { lastName: 'ASC', firstName: 'ASC' },
     });
 
-    return users.map((u) => this.safeUser(u));
+    const rows = await this.withResolvedAvatars(
+      users.map((u) => this.safeUser(u)),
+    );
+
+    // Only the coach roster needs the coaching stats, and they cost two extra
+    // aggregates — so don't make every other user list pay for them.
+    return role === UserRole.COACH ? this.withCoachStats(rows) : rows;
+  }
+
+  /**
+   * Adds the roster's per-coach stats: whether they have any bookable slot left,
+   * and how many sessions they have completed this year. Two grouped queries for
+   * the whole roster rather than a pair per coach.
+   */
+  private async withCoachStats<T extends { id: string }>(
+    coaches: T[],
+  ): Promise<(T & { isAvailable: boolean; sessionsThisYear: number })[]> {
+    if (!coaches.length) return [];
+    const ids = coaches.map((c) => c.id);
+
+    // "Available" means the same thing here as on the booking screen: at least
+    // one active, unbooked, still-upcoming slot (CoachAvailabilityService
+    // .findAvailableForCoach). Keep the two in step if that rule changes.
+    const today = new Date().toISOString().split('T')[0];
+
+    const [slotRows, sessionRows] = await Promise.all([
+      this.coachAvailabilityRepo
+        .createQueryBuilder('a')
+        .select('a.coachId', 'coachId')
+        .addSelect('COUNT(*)', 'count')
+        .where('a.coachId IN (:...ids)', { ids })
+        .andWhere('a.isActive = true')
+        .andWhere('a.isBooked = false')
+        .andWhere('a.availableDate >= :today', { today })
+        .groupBy('a.coachId')
+        .getRawMany<{ coachId: string; count: string }>(),
+      this.coachingSessionRepo
+        .createQueryBuilder('s')
+        .select('s.coachId', 'coachId')
+        .addSelect('COUNT(*)', 'count')
+        .where('s.coachId IN (:...ids)', { ids })
+        .andWhere('s.status = :status', {
+          status: CoachingSessionStatus.COMPLETED,
+        })
+        .andWhere("date_part('year', s.scheduledAt) = :year", {
+          year: new Date().getFullYear(),
+        })
+        .groupBy('s.coachId')
+        .getRawMany<{ coachId: string; count: string }>(),
+    ]);
+
+    const openSlots = new Map(
+      slotRows.map((r) => [r.coachId, Number(r.count)]),
+    );
+    const completed = new Map(
+      sessionRows.map((r) => [r.coachId, Number(r.count)]),
+    );
+
+    return coaches.map((c) => ({
+      ...c,
+      isAvailable: (openSlots.get(c.id) ?? 0) > 0,
+      sessionsThisYear: completed.get(c.id) ?? 0,
+    }));
   }
 
   async findOne(id: string) {
     const user = await this.userRepo.findOne({ where: { id } });
     if (!user) throw new NotFoundException(`User ${id} not found`);
-    return this.safeUser(user);
+    const [resolved] = await this.withResolvedAvatars([this.safeUser(user)]);
+    return resolved;
   }
 
   /**

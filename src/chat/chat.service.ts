@@ -110,6 +110,37 @@ export class ChatService {
     }
   }
 
+  /**
+   * Who the employee is, for tailoring development suggestions. Composed from
+   * whatever the HR import has actually populated — position and employee type
+   * are nullable, and department can come through blank — so each line is
+   * emitted only when it has a value. A missing line means the assistant asks
+   * instead of reasoning from a blank, which is the point: an empty field must
+   * never read as a fact about the person.
+   *
+   * HR job descriptions are meant to join this block once they exist. Keep them
+   * keyed by position rather than by employee so one description covers every
+   * person holding that role.
+   */
+  private buildEmployeeContext(user: User): string[] {
+    const lines: string[] = [];
+
+    if (user.department?.trim()) lines.push(`Department: ${user.department}`);
+    if (user.position?.trim()) lines.push(`Position: ${user.position}`);
+    if (user.employeeType) lines.push(`Employee type: ${user.employeeType}`);
+
+    if (!lines.length) {
+      return ['No role details on file — ask what they do before suggesting development options.'];
+    }
+
+    return [
+      ...lines,
+      'Use this as the starting point when suggesting development options — open with something relevant to this role rather than asking the user to describe themselves.',
+      'A job title says what someone does, not what they want to learn next. Ask at most one short question about their goal, then give concrete suggestions. Never interrogate the user with a list of questions before helping.',
+      'Suggest skills and topics worth learning, not specific courses: you have no tool for looking up course catalogs, so any course title, provider, link, or price you produce would be invented. Point the user to search that topic on a training site themselves, and remind them the Learning Subsidy covers up to ₱3,000 and still needs manager then HR approval.',
+    ];
+  }
+
   private buildSystemPrompt(user: User): string {
     return [
       BASE_PROMPT,
@@ -119,6 +150,7 @@ export class ChatService {
       '## Current user',
       `Name: ${user.firstName} ${user.lastName}`,
       `Roles: ${user.roles.join(', ')}`,
+      ...this.buildEmployeeContext(user),
       `Today's date: ${new Date().toISOString().slice(0, 10)}`,
       'Tailor navigation directions to this role — never direct the user to a page their role cannot access.',
     ].join('\n');

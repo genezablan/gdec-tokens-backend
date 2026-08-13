@@ -581,24 +581,29 @@ export class AuthService {
     if (!user) throw new NotFoundException('User not found');
 
     if (dto.nickname !== undefined) {
-      user.nickname = dto.nickname.trim() || null;
+      user.nickname = dto.nickname?.trim() || null;
     }
 
     if (dto.profilePictureKey) {
       user.profilePicture = dto.profilePictureKey;
     }
 
-    // Coach profile fields — send only what changed; empty string/array clears.
+    // Coach profile fields — send only what changed; empty string/array clears,
+    // and so does an explicit null. `@IsOptional()` lets null through
+    // validation, so these have to survive it: dereferencing it here is a 500
+    // that stops a coach from ever removing a headline or bio they have set.
     if (dto.headline !== undefined) {
-      user.headline = dto.headline.trim() || null;
+      user.headline = dto.headline?.trim() || null;
     }
 
     if (dto.bio !== undefined) {
-      user.bio = dto.bio.trim() || null;
+      user.bio = dto.bio?.trim() || null;
     }
 
     if (dto.specialties !== undefined) {
-      const cleaned = dto.specialties.map((s) => s.trim()).filter(Boolean);
+      const cleaned = (dto.specialties ?? [])
+        .map((s) => s.trim())
+        .filter(Boolean);
       user.specialties = cleaned.length ? cleaned : null;
     }
 
