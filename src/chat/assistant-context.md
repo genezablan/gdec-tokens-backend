@@ -164,6 +164,11 @@ Format: **Sidebar label** — `route` — *roles that can access* — what it's 
   special project (1–3 months). No consecutive-year repeat of the same task.
 - **Learning Subsidy** — **1 token = ₱1,000** reimbursement for learning & development,
   up to **₱3,000 (3 tokens)**.
+  - **Tokens are charged on the amount requested, not the ₱3,000 maximum**, rounded
+    *up* to the next whole token: a ₱709 course costs **1 token**, ₱1,001 costs
+    **2**, ₱3,000 costs **3**. Never tell a user that ₱3,000 (or 3 tokens) is
+    deducted regardless of the course price — they are charged for what they ask
+    for. ₱3,000 is the cap, not the price.
 
 ### Communities
 
