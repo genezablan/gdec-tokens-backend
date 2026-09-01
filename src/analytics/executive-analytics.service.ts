@@ -8,8 +8,11 @@ import { LoginEvent } from '../entities/login-event.entity';
 import { RequestStatus } from '../common/enums';
 import { AnalyticsFiltersDto } from './dto/analytics-filters.dto';
 import {
+  AnalyticsPeriod,
   applyRequestFilters,
   applyUserFilters,
+  dayBuckets,
+  dayKeyExpr,
   monthBuckets,
   monthKeyExpr,
   pct,
@@ -17,6 +20,9 @@ import {
   resolvePeriod,
   round1,
 } from './analytics-query.util';
+
+/** Trailing days shown by the daily series when no month filter is applied. */
+const DAILY_WINDOW_DAYS = 30;
 
 export interface KpiBlock {
   totalActiveUsers: number;
@@ -53,15 +59,23 @@ export class ExecutiveAnalyticsService {
   async getExecutive(filters: AnalyticsFiltersDto) {
     const period = resolvePeriod(filters);
 
-    const [kpis, previous, tokenLedger, engagementTrends, newVsReturning, approvalCycle] =
-      await Promise.all([
-        this.buildKpis(period.start, period.end, filters),
-        this.buildKpis(period.prevStart, period.prevEnd, filters),
-        this.buildTokenLedger(period.year, filters),
-        this.buildEngagementSeries(period.year, filters),
-        this.buildNewVsReturningSeries(period.year, filters),
-        this.buildApprovalCycle(period.start, period.end, filters),
-      ]);
+    const [
+      kpis,
+      previous,
+      tokenLedger,
+      engagementTrends,
+      newVsReturning,
+      newVsReturningDaily,
+      approvalCycle,
+    ] = await Promise.all([
+      this.buildKpis(period.start, period.end, filters),
+      this.buildKpis(period.prevStart, period.prevEnd, filters),
+      this.buildTokenLedger(period.year, filters),
+      this.buildEngagementSeries(period.year, filters),
+      this.buildNewVsReturningSeries(period.year, filters),
+      this.buildNewVsReturningDailySeries(period, filters),
+      this.buildApprovalCycle(period.start, period.end, filters),
+    ]);
 
     return {
       year: period.year,
@@ -72,6 +86,7 @@ export class ExecutiveAnalyticsService {
       tokenLedger,
       engagementTrends,
       newVsReturning,
+      newVsReturningDaily,
       approvalCycle,
     };
   }
@@ -349,6 +364,94 @@ export class ExecutiveAnalyticsService {
         returningUsers: Math.max(0, mau - newUsers),
       };
     });
+  }
+
+  // ─── Daily new vs returning ──────────────────────────────────────────────────
+  // The monthly series hides short campaigns: a reminder blast that brings 15
+  // people back on one day is a single bar averaged across 30. This is the
+  // day-resolution view of the same question.
+
+  /**
+   * Window for the daily series: the selected month when one is set, otherwise
+   * the trailing DAILY_WINDOW_DAYS of the period. A full year at day
+   * resolution is 365 points — too dense to read, and not what this view is for.
+   */
+  private resolveDailyWindow(period: AnalyticsPeriod): {
+    start: Date;
+    end: Date;
+  } {
+    if (period.month) return { start: period.start, end: period.end };
+    // Don't project past today when the selected year is the current one.
+    const end = new Date(Math.min(period.end.getTime(), Date.now()));
+    const start = new Date(end.getTime() - DAILY_WINDOW_DAYS * 86_400_000);
+    return {
+      start: start < period.start ? period.start : start,
+      end,
+    };
+  }
+
+  private async buildNewVsReturningDailySeries(
+    period: AnalyticsPeriod,
+    filters: AnalyticsFiltersDto,
+  ) {
+    const { start, end } = this.resolveDailyWindow(period);
+
+    const qb = this.loginEventRepo
+      .createQueryBuilder('e')
+      .innerJoin('e.user', 'u')
+      .select(dayKeyExpr('e', 'createdAt'), 'date')
+      .addSelect('COUNT(DISTINCT e."userId")', 'activeUsers')
+      .addSelect('COUNT(*)', 'sessions')
+      .where('u.isActive = true')
+      .andWhere('e.createdAt >= :start AND e.createdAt < :end', { start, end })
+      .groupBy('date');
+    applyUserFilters(qb, 'u', filters);
+
+    const [rows, firstLogins] = await Promise.all([
+      qb.getRawMany<{ date: string; activeUsers: string; sessions: string }>(),
+      this.firstLoginsByDay(filters),
+    ]);
+
+    const byDay = new Map(rows.map((r) => [r.date, r]));
+    return dayBuckets(start, end).map(({ date, label }) => {
+      const activeUsers = Number(byDay.get(date)?.activeUsers ?? 0);
+      // A first-ever login is counted new on its own day, so anyone else
+      // active that day had logged in before.
+      const newUsers = firstLogins.get(date) ?? 0;
+      return {
+        date,
+        label,
+        newUsers,
+        returningUsers: Math.max(0, activeUsers - newUsers),
+        sessions: Number(byDay.get(date)?.sessions ?? 0),
+      };
+    });
+  }
+
+  /** Count of users whose first-ever login fell on each `YYYY-MM-DD`. */
+  private async firstLoginsByDay(
+    filters: AnalyticsFiltersDto,
+  ): Promise<Map<string, number>> {
+    const inner = this.loginEventRepo
+      .createQueryBuilder('e')
+      .innerJoin('e.user', 'u')
+      .select('e."userId"', 'userId')
+      .addSelect('MIN(e."createdAt")', 'first')
+      .where('u.isActive = true')
+      .groupBy('e."userId"');
+    applyUserFilters(inner, 'u', filters);
+    const rows = await this.loginEventRepo.manager
+      .createQueryBuilder()
+      .select(
+        `to_char(f."first" AT TIME ZONE '${REPORTING_TZ}', 'YYYY-MM-DD')`,
+        'date',
+      )
+      .addSelect('COUNT(*)', 'count')
+      .from(`(${inner.getQuery()})`, 'f')
+      .setParameters(inner.getParameters())
+      .groupBy('date')
+      .getRawMany<{ date: string; count: string }>();
+    return new Map(rows.map((r) => [r.date, Number(r.count)]));
   }
 
   /** First-ever-login counts bucketed by month ('YYYY-MM' → count). */

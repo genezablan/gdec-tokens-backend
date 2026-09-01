@@ -109,6 +109,43 @@ export const resolvePeriod = (
 export const monthKeyExpr = (alias: string, column: string): string =>
   `to_char(${alias}."${column}" AT TIME ZONE '${REPORTING_TZ}', 'YYYY-MM')`;
 
+/** SQL expression for the `YYYY-MM-DD` bucket of a timestamptz column. */
+export const dayKeyExpr = (alias: string, column: string): string =>
+  `to_char(${alias}."${column}" AT TIME ZONE '${REPORTING_TZ}', 'YYYY-MM-DD')`;
+
+/**
+ * Every `{ date: 'YYYY-MM-DD', label: 'Sep 1' }` day in [start, end), keyed in
+ * the reporting timezone. Stepping by a fixed 24h is safe here because the
+ * reporting zone has no DST, and the `seen` guard keeps it correct regardless.
+ */
+export const dayBuckets = (
+  start: Date,
+  end: Date,
+): { date: string; label: string }[] => {
+  // en-CA formats as YYYY-MM-DD, matching dayKeyExpr's to_char output.
+  const key = new Intl.DateTimeFormat('en-CA', {
+    timeZone: REPORTING_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const label = new Intl.DateTimeFormat('en-US', {
+    timeZone: REPORTING_TZ,
+    month: 'short',
+    day: 'numeric',
+  });
+  const out: { date: string; label: string }[] = [];
+  const seen = new Set<string>();
+  for (let t = start.getTime(); t < end.getTime(); t += 86_400_000) {
+    const d = new Date(t);
+    const date = key.format(d);
+    if (seen.has(date)) continue;
+    seen.add(date);
+    out.push({ date, label: label.format(d) });
+  }
+  return out;
+};
+
 const MONTH_NAMES = [
   'Jan',
   'Feb',
