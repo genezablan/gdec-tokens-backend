@@ -19,6 +19,7 @@ import { ChatModule } from './chat/chat.module';
 import { CommunitiesModule } from './communities/communities.module';
 import { CommunityModule } from './community/community.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { CourseRecommendationsModule } from './course-recommendations/course-recommendations.module';
 import { AnnouncementsModule } from './announcements/announcements.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
@@ -61,6 +62,7 @@ import { databaseConfig, s3Config, sesConfig, anthropicConfig } from './config';
     CommunitiesModule,
     CommunityModule,
     AnalyticsModule,
+    CourseRecommendationsModule,
     AnnouncementsModule,
   ],
   controllers: [AppController],
