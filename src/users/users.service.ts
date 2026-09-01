@@ -246,7 +246,7 @@ export class UsersService {
   }
 
   /**
-   * Adds the roster's per-coach stats: whether they have any bookable slot left,
+   * Adds the roster's per-coach stats: whether they are open for booking,
    * how many sessions they have completed this year, and how many people they
    * are currently coaching. Grouped queries for the whole roster rather than a
    * set per coach.
@@ -279,21 +279,25 @@ export class UsersService {
       Number((coachingOption?.rules as { sessionsRequired?: number })
         ?.sessionsRequired) || 3;
 
-    // "Available" means the same thing here as on the booking screen: at least
-    // one active, unbooked, still-upcoming slot (CoachAvailabilityService
-    // .findAvailableForCoach). Keep the two in step if that rule changes.
-    const today = new Date().toISOString().split('T')[0];
-
+    // "Available" means the coach has published coaching hours — the same
+    // source the booking screen builds its slots from.
+    //
+    // This used to count rows in coach_availability, which is the older manual
+    // slot table. That table has no rows in production and no UI to create any,
+    // so every coach on the roster read as Unavailable regardless of the hours
+    // they had set. Deliberately a "has hours" test rather than a real free-slot
+    // count: the exact per-day grid needs each coach's Outlook calendar, and
+    // fanning that out across the whole roster to render one badge is not worth
+    // the round-trips. The card fetches real slots per coach for its week grid.
     const [slotRows, sessionRows, coacheeRows] = await Promise.all([
-      this.coachAvailabilityRepo
-        .createQueryBuilder('a')
-        .select('a.coachId', 'coachId')
-        .addSelect('COUNT(*)', 'count')
-        .where('a.coachId IN (:...ids)', { ids })
-        .andWhere('a.isActive = true')
-        .andWhere('a.isBooked = false')
-        .andWhere('a.availableDate >= :today', { today })
-        .groupBy('a.coachId')
+      this.userRepo
+        .createQueryBuilder('u')
+        .select('u.id', 'coachId')
+        .addSelect('1', 'count')
+        .where('u.id IN (:...ids)', { ids })
+        .andWhere(`u."coachingWeeklyHours" IS NOT NULL`)
+        .andWhere(`jsonb_array_length(u."coachingWeeklyHours") > 0`)
+        .andWhere(`u."coachingSessionMinutes" IS NOT NULL`)
         .getRawMany<{ coachId: string; count: string }>(),
       this.coachingSessionRepo
         .createQueryBuilder('s')
