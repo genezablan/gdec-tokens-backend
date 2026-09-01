@@ -11,4 +11,11 @@ export default registerAs('anthropic', () => ({
   apiKey: process.env.ANTHROPIC_API_KEY,
   // Default to the cheapest model; override with ANTHROPIC_MODEL.
   model: process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5',
+  /**
+   * Model for the course recommender, separate from chat on purpose. The
+   * recommender needs the current web-search tool, which requires Opus 4.6+ or
+   * Sonnet 4.6+ — the chat model (Haiku) cannot use it. Keeping them apart
+   * means raising one does not silently change the cost of the other.
+   */
+  recommenderModel: process.env.ANTHROPIC_RECOMMENDER_MODEL || 'claude-opus-5',
 }));
