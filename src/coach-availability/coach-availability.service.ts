@@ -104,8 +104,18 @@ export class CoachAvailabilityService {
 
   /**
    * Generate bookable slots for a coach = their coaching-hours grid over the next
-   * BOOKING_HORIZON_DAYS, minus Outlook busy times, minus already-booked sessions.
-   * Returns flags so the UI can explain an empty result.
+   * BOOKING_HORIZON_DAYS, minus already-booked sessions, and minus Outlook busy
+   * times when the coach has connected a calendar.
+   *
+   * Outlook is an enhancement, not a requirement. It used to gate the whole
+   * result, which left 53 of 66 active coaches permanently unbookable no matter
+   * what hours they set — only 19% have ever connected, and a handful are on
+   * madagency.ph without a Microsoft work account at all. A coach without
+   * Outlook can now be booked over something in their own calendar, which is a
+   * real loss of protection, but it only applies to people who could not be
+   * booked at all before.
+   *
+   * `connected` is still returned so the UI can suggest connecting.
    */
   async getBookableSlots(coachId: string): Promise<{
     connected: boolean;
@@ -118,7 +128,7 @@ export class CoachAvailabilityService {
     const hasHours =
       !!coach.coachingWeeklyHours?.length && !!coach.coachingSessionMinutes;
     const connected = await this.calendarService.isConnected(coachId);
-    if (!hasHours || !connected) return { connected, hasHours, slots: [] };
+    if (!hasHours) return { connected, hasHours, slots: [] };
 
     const now = new Date();
     // Walk business-timezone calendar days: "today" and each window's hours mean
@@ -130,7 +140,10 @@ export class CoachAvailabilityService {
       '00:00',
     );
 
-    const busy = await this.calendarService.getBusyIntervals(coachId, from, to);
+    // Skip the Graph round-trip entirely when there is no calendar to read.
+    const busy = connected
+      ? await this.calendarService.getBusyIntervals(coachId, from, to)
+      : [];
 
     // Active sessions block their time (start → start + session length).
     const sessions = await this.sessionRepo.find({
