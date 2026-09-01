@@ -17,6 +17,7 @@ import { CreateTaskOffloadingRequestDto } from './dto/create-task-offloading-req
 import { CreateCoachingRequestDto } from './dto/create-coaching-request.dto';
 import { CreateLearningSubsidyRequestDto } from './dto/create-learning-subsidy-request.dto';
 import { RejectTokenRequestDto } from './dto/reject-token-request.dto';
+import { NudgeApproversDto } from './dto/nudge-approvers.dto';
 import { ResubmitTokenRequestDto } from './dto/resubmit-token-request.dto';
 import { BookSessionDto } from './dto/book-session.dto';
 import { RequestCancelSessionDto } from './dto/request-cancel-session.dto';
@@ -46,6 +47,18 @@ export class TokenRequestsController {
   @Roles(UserRole.ADMIN)
   runSlaSweep() {
     return this.approvalSlaService.runNow();
+  }
+
+  /**
+   * POST /token-requests/sla/nudge
+   * Admin/HR: re-send the reminder to whoever each request is currently blocked
+   * on. The daily sweep only reminds once per stage, so requests that stall
+   * past the escalation window need a manual push.
+   */
+  @Post('sla/nudge')
+  @Roles(UserRole.ADMIN, UserRole.HR_APPROVER)
+  nudgeApprovers(@Body() dto: NudgeApproversDto) {
+    return this.approvalSlaService.nudge(dto.requestIds);
   }
 
   /**

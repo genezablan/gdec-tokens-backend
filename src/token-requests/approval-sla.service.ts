@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { TokenRequest } from '../entities/token-request.entity';
 import { User } from '../entities/user.entity';
 import {
@@ -104,6 +104,93 @@ export class ApprovalSlaService {
       `Approval SLA sweep: ${reminded} reminder(s), ${escalated} escalation(s) across ${inFlight.length} in-flight request(s).`,
     );
     return { reminded, escalated };
+  }
+
+  /**
+   * Re-send the approver reminder for specific requests, on demand.
+   *
+   * The daily sweep fires its reminder and its escalation once each, so a
+   * request that stalls past the escalation window goes silent — a row sitting
+   * 24 days in the queue has had nothing sent since day 6. This lets an admin
+   * nudge whoever it is currently blocked on, as many times as needed.
+   *
+   * Deliberately leaves slaRemindedAt / slaEscalatedAt untouched: those track
+   * the sweep's one-shot bookkeeping, and a manual nudge must neither consume
+   * a stage's automatic reminder nor re-arm one that already fired.
+   */
+  async nudge(
+    requestIds: string[],
+  ): Promise<{ sent: number; skipped: { id: string; reason: string }[] }> {
+    const skipped: { id: string; reason: string }[] = [];
+    if (requestIds.length === 0) return { sent: 0, skipped };
+
+    const requests = await this.requestRepo.find({
+      where: { id: In(requestIds) },
+      relations: ['employee', 'manager', 'developmentOption'],
+    });
+
+    const found = new Set(requests.map((r) => r.id));
+    for (const id of requestIds) {
+      if (!found.has(id)) skipped.push({ id, reason: 'request not found' });
+    }
+
+    // Only pay for the HR lookup when something is actually at that stage.
+    const hrApprovers = requests.some(
+      (r) => r.status === RequestStatus.MANAGER_APPROVED,
+    )
+      ? await this.activeUsersWithRole(UserRole.HR_APPROVER)
+      : [];
+
+    const now = Date.now();
+    let sent = 0;
+
+    for (const request of requests) {
+      if (
+        request.status !== RequestStatus.PENDING &&
+        request.status !== RequestStatus.MANAGER_APPROVED
+      ) {
+        skipped.push({
+          id: request.id,
+          reason: `not awaiting approval (${request.status})`,
+        });
+        continue;
+      }
+
+      const recipients =
+        request.status === RequestStatus.PENDING
+          ? request.manager
+            ? [request.manager]
+            : []
+          : hrApprovers;
+
+      if (recipients.length === 0) {
+        skipped.push({ id: request.id, reason: 'no active approver to notify' });
+        continue;
+      }
+
+      const stageStart =
+        request.status === RequestStatus.PENDING
+          ? request.createdAt
+          : (request.managerApprovedAt ?? request.createdAt);
+      const daysPending = Math.floor(
+        (now - new Date(stageStart).getTime()) / DAY_MS,
+      );
+
+      try {
+        await this.notifyContacts(request, daysPending, recipients, false);
+        sent++;
+      } catch (err) {
+        skipped.push({
+          id: request.id,
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    this.logger.log(
+      `Manual approver nudge: ${sent} sent, ${skipped.length} skipped.`,
+    );
+    return { sent, skipped };
   }
 
   private async activeUsersWithRole(role: UserRole): Promise<User[]> {
