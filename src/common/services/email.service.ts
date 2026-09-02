@@ -58,6 +58,13 @@ const BRAND = {
   border: '#E6EAF2',
 };
 
+/**
+ * Address shape SES will accept: no whitespace or separators anywhere, one @,
+ * and a dotted domain. Deliberately stricter than RFC 5322 — the job is to stop
+ * a malformed row poisoning a whole BCC batch, not to be liberal in what we take.
+ */
+const EMAIL_ADDRESS = /^[^\s@<>,;"]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
+
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 @Injectable()
@@ -137,6 +144,113 @@ export class EmailService {
       this.logger.error(`Failed to send email to ${emailRequest.to}: ${msg}`);
       return { messageId: '', success: false, message: `Failed to send email: ${msg}` };
     }
+  }
+
+  // ─── Bulk send ──────────────────────────────────────────────────────────────
+
+  /**
+   * Split a recipient list into addresses SES will accept and ones it won't.
+   *
+   * Employee emails were imported from spreadsheets with no cleaning
+   * (`scripts/import-employees.ts`), so a stored address can carry leading or
+   * trailing whitespace, a stray tab, or two addresses joined by newlines
+   * ("a@x.com\r\n\r\nb@y.com"). SES rejects the ENTIRE SendEmail call when a
+   * single destination is malformed, so one such row silently costs a whole
+   * BCC batch its copy. Split on the usual separators, keep every part that
+   * still looks like an address, and dedupe case-insensitively.
+   */
+  private normalizeRecipients(recipients: string[]): {
+    valid: string[];
+    invalid: string[];
+  } {
+    const valid = new Map<string, string>();
+    const invalid: string[] = [];
+
+    for (const raw of recipients ?? []) {
+      if (!raw) continue;
+      for (const part of String(raw).split(/[\s,;]+/)) {
+        const address = part.trim();
+        if (!address) continue;
+        if (EMAIL_ADDRESS.test(address)) {
+          const key = address.toLowerCase();
+          if (!valid.has(key)) valid.set(key, address);
+        } else {
+          invalid.push(address);
+        }
+      }
+    }
+
+    return { valid: [...valid.values()], invalid };
+  }
+
+  /**
+   * Send one message to many people, BCC'd in SES-sized batches.
+   *
+   * A batch SES rejects is retried one address at a time, so a single bad
+   * recipient can't cost the other 44 their copy, and anything still
+   * undeliverable is logged by address instead of disappearing into a caught
+   * error. Returns the counts for callers that want to record them.
+   */
+  private async sendBulkBcc(opts: {
+    recipients: string[];
+    subject: string;
+    htmlBody: string;
+    textBody: string;
+    /** Prefix for log lines, e.g. `Announcement email "Holiday schedule"`. */
+    label: string;
+  }): Promise<{ sent: number; failed: string[] }> {
+    const { recipients, subject, htmlBody, textBody, label } = opts;
+    const { valid, invalid } = this.normalizeRecipients(recipients);
+
+    if (invalid.length > 0) {
+      this.logger.warn(
+        `${label}: skipped ${invalid.length} unusable address(es): ${invalid.slice(0, 10).join(', ')}`,
+      );
+    }
+    if (valid.length === 0) {
+      this.logger.warn(`${label}: no valid recipients — nothing sent`);
+      return { sent: 0, failed: [] };
+    }
+
+    // SES caps a single message at 50 recipients (To + Cc + Bcc).
+    const BATCH = 45;
+    let sent = 0;
+    const failed: string[] = [];
+
+    for (let i = 0; i < valid.length; i += BATCH) {
+      const batch = valid.slice(i, i + BATCH);
+      const result = await this.sendEmail({
+        to: this.fromEmail,
+        bcc: batch,
+        subject,
+        htmlBody,
+        textBody,
+      });
+
+      if (result.success) {
+        sent += batch.length;
+        continue;
+      }
+
+      this.logger.warn(
+        `${label}: BCC batch of ${batch.length} rejected (${result.message}) — retrying individually`,
+      );
+      for (const address of batch) {
+        const single = await this.sendEmail({ to: address, subject, htmlBody, textBody });
+        if (single.success) sent += 1;
+        else failed.push(address);
+      }
+    }
+
+    if (failed.length > 0) {
+      this.logger.error(
+        `${label}: delivered to ${sent}/${valid.length}; ${failed.length} failed: ${failed.slice(0, 20).join(', ')}`,
+      );
+    } else {
+      this.logger.log(`${label}: delivered to ${sent} recipient(s)`);
+    }
+
+    return { sent, failed };
   }
 
   // ─── Template builder ───────────────────────────────────────────────────────
@@ -1275,8 +1389,6 @@ export class EmailService {
     announcementId?: string;
   }): Promise<void> {
     const { recipients, title, excerpt, authorName, createdAt, announcementId } = opts;
-    const clean = [...new Set(recipients.filter((e) => !!e))];
-    if (clean.length === 0) return;
     const announcementUrl = `${this.frontendUrl}/announcement${announcementId ? `/${announcementId}` : ''}`;
 
     const content = `
@@ -1295,17 +1407,13 @@ export class EmailService {
     const htmlBody = this.buildTemplate(content);
     const textBody = `New announcement: ${title}\n\n${this.excerpt(excerpt)}\n\nView it here: ${announcementUrl}\n\nBest regards,\nGreat Deals Academy`;
 
-    // SES caps a single message at 50 recipients; BCC in batches of 45.
-    const BATCH = 45;
-    for (let i = 0; i < clean.length; i += BATCH) {
-      await this.sendEmail({
-        to: this.fromEmail,
-        bcc: clean.slice(i, i + BATCH),
-        subject: `📢 New Announcement: ${title}`,
-        htmlBody,
-        textBody,
-      });
-    }
+    await this.sendBulkBcc({
+      recipients,
+      subject: `📢 New Announcement: ${title}`,
+      htmlBody,
+      textBody,
+      label: `Announcement email "${title}"`,
+    });
   }
 
   /** [TO MENTIONED USER] Sent when someone @mentions them in a community post. */
@@ -1555,8 +1663,6 @@ export class EmailService {
     authorName?: string;
   }): Promise<void> {
     const { recipients, title, excerpt, authorName } = opts;
-    const clean = [...new Set(recipients.filter((e) => !!e))];
-    if (clean.length === 0) return;
 
     const content = `
       <p style="margin:0 0 6px;font-size:15px;">Hi there,</p>
@@ -1573,17 +1679,13 @@ export class EmailService {
     const htmlBody = this.buildTemplate(content);
     const textBody = `New tutorial published: ${title}\n\n${this.excerpt(excerpt)}\n\nView it here: ${this.frontendUrl}/tutorials\n\nBest regards,\nGreat Deals Academy`;
 
-    // SES caps a single message at 50 recipients; BCC in batches of 45.
-    const BATCH = 45;
-    for (let i = 0; i < clean.length; i += BATCH) {
-      await this.sendEmail({
-        to: this.fromEmail,
-        bcc: clean.slice(i, i + BATCH),
-        subject: `🎓 New Tutorial: ${title}`,
-        htmlBody,
-        textBody,
-      });
-    }
+    await this.sendBulkBcc({
+      recipients,
+      subject: `🎓 New Tutorial: ${title}`,
+      htmlBody,
+      textBody,
+      label: `Tutorial email "${title}"`,
+    });
   }
 
   // ─── Token Balance Notifications ───────────────────────────────────────────

@@ -4,6 +4,21 @@ import { UserRole, EmployeeType, EmployeeStatus, Gender, AuthProvider } from '..
 import * as XLSX from 'xlsx';
 import * as bcrypt from 'bcrypt';
 
+/**
+ * Take the first address out of a spreadsheet cell and strip the whitespace
+ * around it. The source columns hold surrounding spaces and tabs, and sometimes
+ * two addresses joined by newlines — stored raw, those break both login (an
+ * exact-match lookup) and SES, which rejects a whole send if one destination is
+ * malformed.
+ */
+function cleanEmail(value: unknown): string | undefined {
+  const first = String(value ?? '')
+    .split(/[\s,;]+/)
+    .map((part) => part.trim())
+    .find(Boolean);
+  return first || undefined;
+}
+
 async function importEmployees() {
   try {
     // Initialize database connection
@@ -57,7 +72,7 @@ async function importEmployees() {
         // Create user object
         const userData = {
           employeeId: employee['Employee ID'],
-          email: employee['Email for Dev Token Web/App'],
+          email: cleanEmail(employee['Email for Dev Token Web/App']),
           password: defaultPassword,
           authProvider: AuthProvider.LOCAL,
           firstName: employee['First Name'],
