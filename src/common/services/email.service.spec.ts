@@ -159,6 +159,57 @@ describe('EmailService bulk recipients', () => {
     });
   });
 
+  describe('announcement formatting', () => {
+    const bodyHtml =
+      '<p>First line.<br>Second line.</p><p>A <strong>bold</strong> paragraph.</p><ul><li>One</li><li>Two</li></ul>';
+
+    const capture = async (opts: Partial<Parameters<EmailService['sendAnnouncementEmail']>[0]> = {}) => {
+      let sent: { htmlBody?: string; textBody?: string } = {};
+      jest.spyOn(service, 'sendEmail').mockImplementation(async (req) => {
+        sent = req;
+        return { messageId: 'x', success: true, message: '' };
+      });
+      await service.sendAnnouncementEmail({
+        recipients: ['a@example.com'],
+        title: 'Title',
+        excerpt: 'First line. Second line. A bold paragraph. One Two',
+        authorName: 'HR',
+        ...opts,
+      });
+      return sent;
+    };
+
+    afterEach(() => jest.restoreAllMocks());
+
+    it('keeps the author paragraphs instead of one run-on line', async () => {
+      // The reported bug: the CEO's masterclass post arrived as a single
+      // unbroken sentence because postCard collapsed all whitespace.
+      const { htmlBody } = await capture({ bodyHtml });
+      expect(htmlBody!.match(/<p style="margin:0 0 12px/g)).toHaveLength(2);
+      expect(htmlBody).toContain('<strong>bold</strong>');
+      expect(htmlBody).toContain('<li style="margin:0 0 6px');
+    });
+
+    it('sends the whole announcement, not a 320-character excerpt', async () => {
+      const long = `<p>${'word '.repeat(200).trim()}</p>`;
+      const { htmlBody } = await capture({ bodyHtml: long });
+      expect(htmlBody).not.toContain('…');
+      expect(htmlBody!.length).toBeGreaterThan(1000);
+    });
+
+    it('gives the text part real line breaks', async () => {
+      const { textBody } = await capture({ bodyHtml });
+      expect(textBody).toContain('First line.\nSecond line.');
+      expect(textBody).toContain('• One');
+      expect(textBody).not.toMatch(/First line\. Second line\./);
+    });
+
+    it('falls back to the plain excerpt when there is no rich body', async () => {
+      const { htmlBody } = await capture({ bodyHtml: null });
+      expect(htmlBody).toContain('First line. Second line.');
+    });
+  });
+
   describe('throttling', () => {
     const throttleError = Object.assign(new Error('Maximum sending rate exceeded.'), {
       name: 'Throttling',

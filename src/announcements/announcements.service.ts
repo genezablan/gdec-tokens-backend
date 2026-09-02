@@ -79,6 +79,15 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Who announcements are published as, in the email.
+ *
+ * The board gets there a different way: the API returns `author: null` and each
+ * client falls back to its own copy of this string (`ANNOUNCEMENT_BYLINE` in
+ * `src/constants/announcements.js`). Change both together.
+ */
+const ANNOUNCEMENT_BYLINE = 'HR Admin';
+
 @Injectable()
 export class AnnouncementsService {
   private readonly logger = new Logger(AnnouncementsService.name);
@@ -433,7 +442,12 @@ export class AnnouncementsService {
         recipients,
         title: announcement.title,
         excerpt: announcement.body ?? '',
-        authorName: author.fullName,
+        // The stored plain-text `body` has had its line breaks collapsed, so the
+        // email renders from the sanitised HTML to keep the author's paragraphs.
+        bodyHtml: announcement.bodyHtml,
+        // Same reasoning as the `author: null` above — the email is from the
+        // Academy, not from the person who happened to publish it.
+        authorName: ANNOUNCEMENT_BYLINE,
         createdAt: announcement.createdAt,
         announcementId: announcement.id,
       });
@@ -514,14 +528,17 @@ export class AnnouncementsService {
       isRead: false,
       isAcknowledged: false,
       reactions: [],
-      author: row.author
-        ? {
-            id: row.author.id,
-            name: row.author.fullName,
-            avatarUrl: row.author.profilePicture ?? null,
-            position: row.author.position ?? null,
-          }
-        : null,
+      /**
+       * Deliberately not exposed. An announcement speaks for the organisation,
+       * not for whoever typed it, and HR asked for the byline hidden — a named
+       * person invites employees to route questions to them personally.
+       *
+       * `authorId` is still stored on the row, so who posted what remains
+       * answerable from the database; it just isn't published to the board or
+       * the email. Every client already falls back to "Great Deals Academy"
+       * with an initials avatar and no position line when this is null.
+       */
+      author: null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };

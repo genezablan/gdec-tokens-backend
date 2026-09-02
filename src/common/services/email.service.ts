@@ -1453,9 +1453,15 @@ export class EmailService {
     chip?: string;
     title?: string | null;
     content: string;
+    /**
+     * Pre-sanitised rich HTML to render instead of `content`. Announcements are
+     * written with paragraphs, bold and lists; flattening them into the plain
+     * `content` string turns the whole post into one run-on line.
+     */
+    contentHtml?: string | null;
     accent?: string;
   }): string {
-    const { authorName, timestamp, chip, title, content, accent = BRAND.primary } = opts;
+    const { authorName, timestamp, chip, title, content, contentHtml, accent = BRAND.primary } = opts;
     const chipHtml = chip
       ? `<tr><td colspan="2" style="padding:0 0 14px;">
            <span style="display:inline-block;background:${BRAND.body};color:${accent};font-size:12px;font-weight:700;padding:5px 12px;border-radius:999px;">${this.escapeHtml(chip)}</span>
@@ -1464,7 +1470,9 @@ export class EmailService {
     const titleHtml = title
       ? `<p style="margin:16px 0 6px;font-size:16px;font-weight:700;color:${BRAND.textDark};">${this.escapeHtml(title)}</p>`
       : '';
-    const body = this.escapeHtml(this.excerpt(content, 320));
+    const body = contentHtml?.trim()
+      ? this.emailifyRichText(contentHtml)
+      : `<p style="margin:${title ? '0' : '16px 0 0'};font-size:14px;line-height:1.65;color:${BRAND.textDark};">${this.escapeHtml(this.excerpt(content, 320))}</p>`;
     return `
       <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="border:1px solid ${BRAND.border};border-radius:12px;background:${BRAND.white};margin:0 0 24px;">
         <tr><td style="padding:20px 22px;">
@@ -1479,9 +1487,52 @@ export class EmailService {
             </tr>
           </table>
           ${titleHtml}
-          <p style="margin:${title ? '0' : '16px 0 0'};font-size:14px;line-height:1.65;color:${BRAND.textDark};">${body}</p>
+          ${body}
         </td></tr>
       </table>`;
+  }
+
+  /**
+   * Style sanitised rich text for email. Clients can't be trusted with a
+   * stylesheet, and Outlook in particular ignores element defaults, so the
+   * spacing has to ride inline on each tag. The input is already restricted to
+   * the sanitiser's allowlist (p, br, strong, em, u, s, ul, ol, li, a, code,
+   * blockquote, span), so these are the only tags that can appear.
+   */
+  private emailifyRichText(html: string): string {
+    const text = `font-size:14px;line-height:1.65;color:${BRAND.textDark};`;
+    return html
+      .replace(/<p>/g, `<p style="margin:0 0 12px;${text}">`)
+      .replace(/<ul>/g, `<ul style="margin:0 0 12px;padding-left:22px;">`)
+      .replace(/<ol>/g, `<ol style="margin:0 0 12px;padding-left:22px;">`)
+      .replace(/<li>/g, `<li style="margin:0 0 6px;${text}">`)
+      .replace(/<blockquote>/g, `<blockquote style="margin:0 0 12px;padding:8px 14px;border-left:3px solid ${BRAND.border};${text}">`)
+      .replace(/<a /g, `<a style="color:${BRAND.primary};" `);
+  }
+
+  /**
+   * Plain-text counterpart for the text/plain part — block boundaries become
+   * real newlines rather than being collapsed away, so the fallback body reads
+   * like the announcement instead of one long sentence.
+   */
+  private richTextToPlain(html: string): string {
+    return html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|li|blockquote|h[1-6])>/gi, '\n')
+      .replace(/<li>/gi, '• ')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .split('\n')
+      .map((line) => line.trim())
+      .join('\n')
+      .trim();
   }
 
   /**
@@ -1492,28 +1543,34 @@ export class EmailService {
     recipients: string[];
     title: string;
     excerpt: string;
+    /** Sanitised rich body — preferred over `excerpt`, which has no formatting. */
+    bodyHtml?: string | null;
     authorName: string;
     createdAt?: Date;
     announcementId?: string;
   }): Promise<void> {
-    const { recipients, title, excerpt, authorName, createdAt, announcementId } = opts;
+    const { recipients, title, excerpt, bodyHtml, authorName, createdAt, announcementId } = opts;
     const announcementUrl = `${this.frontendUrl}/announcement${announcementId ? `/${announcementId}` : ''}`;
 
     const content = `
       <p style="margin:0 0 6px;font-size:15px;">Hi there,</p>
-      <p style="margin:0 0 22px;font-size:15px;color:${BRAND.textMuted};">A new announcement has been posted${authorName ? ` by <strong style="color:${BRAND.textDark};">${this.escapeHtml(authorName)}</strong>` : ''}.</p>
+      <p style="margin:0 0 22px;font-size:15px;color:${BRAND.textMuted};">A new announcement has been posted.</p>
       ${this.postCard({
         authorName: authorName || 'Great Deals Academy',
         timestamp: createdAt ? this.formatDateTime(createdAt) : undefined,
         chip: '📢 Announcement',
         title,
         content: excerpt,
+        contentHtml: bodyHtml,
         accent: BRAND.accent,
       })}
       ${this.button('View Announcement', announcementUrl, BRAND.primary)}
     `;
     const htmlBody = this.buildTemplate(content);
-    const textBody = `New announcement: ${title}\n\n${this.excerpt(excerpt)}\n\nView it here: ${announcementUrl}\n\nBest regards,\nGreat Deals Academy`;
+    // Announcements go out in full — the body IS the message, and a 200-character
+    // excerpt cut the CEO's masterclass details off mid-sentence.
+    const plainBody = bodyHtml?.trim() ? this.richTextToPlain(bodyHtml) : excerpt;
+    const textBody = `New announcement: ${title}\n\n${plainBody}\n\nView it here: ${announcementUrl}\n\nBest regards,\nGreat Deals Academy`;
 
     await this.sendBulkBcc({
       recipients,
