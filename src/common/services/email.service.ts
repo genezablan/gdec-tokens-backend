@@ -17,6 +17,11 @@ export interface SendEmailResponse {
   messageId: string;
   success: boolean;
   message: string;
+  /**
+   * SES rejected this for going too fast, and the retries were exhausted.
+   * Callers use it to back off rather than re-send the same load a second way.
+   */
+  throttled?: boolean;
 }
 
 /** Use-it-or-lose-it reminder tiers, in calendar order. */
@@ -74,12 +79,23 @@ export class EmailService {
   private readonly fromEmail: string;
   private readonly frontendUrl: string;
 
+  /** Recipients per second we're willing to hand SES. */
+  private readonly maxSendRate: number;
+  private readonly maxSendAttempts: number;
+  /** Serialises every SES call so the pacing below can't be raced past. */
+  private sendQueue: Promise<unknown> = Promise.resolve();
+  /** Epoch ms at which the rate budget next has room. */
+  private nextSendAt = 0;
+
   constructor(private readonly configService: ConfigService) {
     const accessKeyId = this.configService.get<string>('ses.accessKeyId');
     const secretAccessKey = this.configService.get<string>('ses.secretAccessKey');
     const region = this.configService.get<string>('ses.region') || 'ap-southeast-1';
     this.fromEmail = this.configService.get<string>('ses.fromEmail') || 'tokens@greatdealscorp.com';
     this.frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
+
+    this.maxSendRate = Math.max(this.configService.get<number>('ses.maxSendRate') || 12, 0.1);
+    this.maxSendAttempts = this.configService.get<number>('ses.maxSendAttempts') || 5;
 
     if (!accessKeyId || !secretAccessKey) {
       throw new Error('Missing required SES configuration variables');
@@ -89,6 +105,77 @@ export class EmailService {
       region,
       credentials: { accessKeyId, secretAccessKey },
     });
+  }
+
+  // ─── Rate limiting ──────────────────────────────────────────────────────────
+
+  /**
+   * Does this error mean "you are sending too fast"?
+   *
+   * SES answers a rate breach with a `Throttling` error whose message is
+   * "Maximum sending rate exceeded" — the exact rejection that lost four of the
+   * ten announcement batches on 2026-09-02. Matched on both name and message
+   * because the SDK surfaces it differently across error paths.
+   */
+  private isThrottleError(error: unknown): boolean {
+    const err = error as { name?: string; message?: string } | null;
+    if (!err) return false;
+    if (err.name === 'Throttling' || err.name === 'ThrottlingException') return true;
+    return /maximum sending rate exceeded|throttl/i.test(err.message ?? '');
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Run `task` on the shared send queue, spending `recipients` of the per-second
+   * budget. A 45-address BCC batch therefore reserves 45 slots and the next send
+   * waits ~3.2s at 14/s, instead of both going out in the same millisecond.
+   *
+   * One queue for the whole service, so a bulk blast and a single approval email
+   * pace against each other rather than racing for the same allowance.
+   */
+  private schedule<T>(task: () => Promise<T>, recipients: number): Promise<T> {
+    const run = this.sendQueue.then(async () => {
+      const now = Date.now();
+      const startAt = Math.max(now, this.nextSendAt);
+      if (startAt > now) await this.sleep(startAt - now);
+      this.nextSendAt = startAt + Math.ceil((Math.max(recipients, 1) / this.maxSendRate) * 1000);
+      return task();
+    });
+    // The chain must survive a failed send, or one rejection stalls every
+    // subsequent email for the life of the process.
+    this.sendQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /**
+   * Hand one command to SES, paced, retrying with exponential backoff while it
+   * says we're going too fast. Any other error is thrown on the first attempt —
+   * a malformed address won't get better for waiting.
+   */
+  private async dispatch(
+    command: SendEmailCommand,
+    describe: string,
+    recipients: number,
+  ): Promise<{ MessageId?: string }> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.schedule(() => this.sesClient.send(command), recipients);
+      } catch (error) {
+        if (!this.isThrottleError(error) || attempt >= this.maxSendAttempts) throw error;
+        // Exponential with jitter, so parallel senders don't retry in lockstep.
+        const backoff = Math.min(8000, 250 * 2 ** attempt) + Math.floor(Math.random() * 250);
+        this.logger.warn(
+          `SES throttled ${describe} (attempt ${attempt}/${this.maxSendAttempts}) — retrying in ${backoff}ms`,
+        );
+        await this.sleep(backoff);
+      }
+    }
   }
 
   // ─── Core send ──────────────────────────────────────────────────────────────
@@ -135,14 +222,24 @@ export class EmailService {
         ReplyToAddresses: emailRequest.replyTo ? [emailRequest.replyTo] : undefined,
       });
 
-      const response = await this.sesClient.send(command);
+      const recipientCount = toAddresses.length + ccAddresses.length + bccAddresses.length;
+      const response = await this.dispatch(
+        command,
+        `"${emailRequest.subject}" (${recipientCount} recipient(s))`,
+        recipientCount,
+      );
       this.logger.log(`Email sent [${response.MessageId}] to ${toAddresses.join(', ')} — ${emailRequest.subject}`);
 
       return { messageId: response.MessageId || '', success: true, message: 'Email sent successfully' };
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Failed to send email to ${emailRequest.to}: ${msg}`);
-      return { messageId: '', success: false, message: `Failed to send email: ${msg}` };
+      return {
+        messageId: '',
+        success: false,
+        message: `Failed to send email: ${msg}`,
+        throttled: this.isThrottleError(error),
+      };
     }
   }
 
@@ -229,6 +326,17 @@ export class EmailService {
 
       if (result.success) {
         sent += batch.length;
+        continue;
+      }
+
+      // A throttle already exhausted its backoff inside dispatch(). Splitting it
+      // into 45 individual sends would hand SES 45× the load it just refused and
+      // starve every other email behind them, so record it and move on.
+      if (result.throttled) {
+        this.logger.error(
+          `${label}: BCC batch of ${batch.length} still throttled after ${this.maxSendAttempts} attempts — giving up on this batch`,
+        );
+        failed.push(...batch);
         continue;
       }
 

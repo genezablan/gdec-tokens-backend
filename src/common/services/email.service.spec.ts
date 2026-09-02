@@ -17,6 +17,8 @@ describe('EmailService bulk recipients', () => {
         'ses.secretAccessKey': 'test-secret',
         'ses.region': 'ap-southeast-1',
         'ses.fromEmail': 'tokens@greatdealscorp.com',
+        'ses.maxSendRate': 100000, // effectively no pacing delay in tests
+        'ses.maxSendAttempts': 3,
         FRONTEND_URL: 'https://devtokens.greatdealscorp.com',
       })[key],
   } as unknown as ConfigService;
@@ -135,6 +137,121 @@ describe('EmailService bulk recipients', () => {
       const result = await sendBulk(['n/a', '']);
       expect(send).not.toHaveBeenCalled();
       expect(result).toEqual({ sent: 0, failed: [] });
+    });
+
+    it('does not fan a throttled batch out into individual sends', async () => {
+      // What actually broke on 2026-09-02: SES answered "Maximum sending rate
+      // exceeded". Retrying that batch as 45 separate messages would hand SES
+      // 45x the load it just refused, so the batch is recorded and abandoned.
+      const throttled: SendEmailResponse = {
+        messageId: '',
+        success: false,
+        message: 'Failed to send email: Maximum sending rate exceeded.',
+        throttled: true,
+      };
+      const send = jest.spyOn(service, 'sendEmail').mockResolvedValue(throttled);
+
+      const result = await sendBulk(['a@example.com', 'b@example.com']);
+
+      expect(send).toHaveBeenCalledTimes(1); // the batch only — no per-address retry
+      expect(result.sent).toBe(0);
+      expect(result.failed).toEqual(['a@example.com', 'b@example.com']);
+    });
+  });
+
+  describe('throttling', () => {
+    const throttleError = Object.assign(new Error('Maximum sending rate exceeded.'), {
+      name: 'Throttling',
+    });
+
+    const sesSend = () => (service as any).sesClient.send as jest.Mock;
+
+    beforeEach(() => {
+      (service as any).sesClient.send = jest.fn();
+      (service as any).sendQueue = Promise.resolve();
+      (service as any).nextSendAt = 0;
+    });
+
+    const send = () =>
+      service.sendEmail({ to: 'a@example.com', subject: 's', textBody: 'b' });
+
+    it('recognises the SES rate-limit rejection', () => {
+      const isThrottle = (e: unknown) => (service as any).isThrottleError(e);
+      expect(isThrottle(throttleError)).toBe(true);
+      expect(isThrottle(new Error('Maximum sending rate exceeded.'))).toBe(true);
+      expect(isThrottle(new Error('Illegal address'))).toBe(false);
+      expect(isThrottle(null)).toBe(false);
+    });
+
+    it('retries a throttled send and succeeds', async () => {
+      sesSend()
+        .mockRejectedValueOnce(throttleError)
+        .mockResolvedValueOnce({ MessageId: 'mid' });
+
+      const result = await send();
+
+      expect(sesSend()).toHaveBeenCalledTimes(2);
+      expect(result.success).toBe(true);
+    });
+
+    it('gives up after the configured attempts and flags it as throttled', async () => {
+      sesSend().mockRejectedValue(throttleError);
+
+      const result = await send();
+
+      expect(sesSend()).toHaveBeenCalledTimes(3); // ses.maxSendAttempts
+      expect(result.success).toBe(false);
+      expect(result.throttled).toBe(true);
+    });
+
+    it('does not retry an error that waiting cannot fix', async () => {
+      sesSend().mockRejectedValue(new Error('Illegal address'));
+
+      const result = await send();
+
+      expect(sesSend()).toHaveBeenCalledTimes(1);
+      expect(result.throttled).toBe(false);
+    });
+
+    it('keeps sending after a failure — the queue must not stall', async () => {
+      sesSend()
+        .mockRejectedValueOnce(new Error('Illegal address'))
+        .mockResolvedValueOnce({ MessageId: 'mid' });
+
+      const first = await send();
+      const second = await send();
+
+      expect(first.success).toBe(false);
+      expect(second.success).toBe(true);
+    });
+
+    it('spends the rate budget per recipient, not per message', async () => {
+      // The heart of the 2026-09-02 failure: SES charges its rate limit per
+      // recipient, so a 45-address BCC batch must reserve 45 slots. At 45/s
+      // that batch owes the next send a full second.
+      const paced = new EmailService({
+        get: (key: string) =>
+          ({
+            'ses.accessKeyId': 'k',
+            'ses.secretAccessKey': 's',
+            'ses.maxSendRate': 45,
+            'ses.maxSendAttempts': 1,
+          })[key],
+      } as unknown as ConfigService);
+      (paced as any).sesClient.send = jest.fn().mockResolvedValue({ MessageId: 'mid' });
+
+      const started = Date.now();
+      await paced.sendEmail({
+        to: 'from@example.com',
+        bcc: Array.from({ length: 45 }, (_, i) => `u${i}@example.com`),
+        subject: 's',
+        textBody: 'b',
+      });
+      await paced.sendEmail({ to: 'next@example.com', subject: 's', textBody: 'b' });
+      const elapsed = Date.now() - started;
+
+      // 46 recipients at 45/s ≈ 1.02s of budget before the second send may go.
+      expect(elapsed).toBeGreaterThanOrEqual(950);
     });
   });
 });
