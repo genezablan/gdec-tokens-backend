@@ -26,6 +26,7 @@
     "migration:run:prod": "./node_modules/.bin/typeorm migration:run -d dist/src/data-source.js",
     "import:employees": "ts-node -r tsconfig-paths/register scripts/import-employees.ts",
     "import:ops-gmail": "ts-node -r tsconfig-paths/register scripts/import-ops-gmail.ts",
+    "fix:user-emails": "ts-node -r tsconfig-paths/register scripts/normalize-user-emails.ts",
     "link:supervisors": "ts-node -r tsconfig-paths/register scripts/link-supervisors.ts",
     "seed:approver-roles": "ts-node -r tsconfig-paths/register scripts/seed-approver-roles.ts",
     "seed:coach-roles": "ts-node -r tsconfig-paths/register scripts/seed-coach-roles.ts",

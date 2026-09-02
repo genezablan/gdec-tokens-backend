@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
@@ -30,6 +31,17 @@ const BOOKING_HORIZON_DAYS = 28;
 const hhmm = (d: Date) => utcToWallClock(d).time;
 const ymd = (d: Date) => utcToWallClock(d).date;
 
+/** A published window the coach is already busy in, over the booking horizon. */
+export interface HourConflict {
+  day: number;
+  startTime: string;
+  endTime: string;
+  /** How many times this weekday falls inside the horizon. */
+  occurrences: number;
+  /** The `YYYY-MM-DD` days where the calendar clashes with the window. */
+  conflictingDates: string[];
+}
+
 export interface BookableSlot {
   id: string;
   availableDate: string;
@@ -41,6 +53,8 @@ export interface BookableSlot {
 
 @Injectable()
 export class CoachAvailabilityService {
+  private readonly logger = new Logger(CoachAvailabilityService.name);
+
   constructor(
     @InjectRepository(CoachAvailability)
     private readonly availabilityRepo: Repository<CoachAvailability>,
@@ -97,7 +111,76 @@ export class CoachAvailabilityService {
     if (dto.coachingSessionMinutes !== undefined)
       coach.coachingSessionMinutes = dto.coachingSessionMinutes;
     await this.userRepo.save(coach);
-    return this.getCoachingHours(coachId);
+
+    const saved = await this.getCoachingHours(coachId);
+    return { ...saved, conflicts: await this.findHourConflicts(coach) };
+  }
+
+  /**
+   * Published windows that yield no bookable time, over the booking horizon.
+   *
+   * Coaches choose their hours blind — the form shows a weekly grid, not their
+   * calendar — so it is easy to publish an hour you are booked solid in and end
+   * up with no availability at all and no idea why.
+   *
+   * Deliberately reports "this window produced nothing that day" rather than
+   * "something overlaps this window". A coach offering 09:00–17:00 almost always
+   * has *a* meeting inside it, and warning about that would be noise on every
+   * wide window; what matters is whether a bookable session survives. Measured
+   * against the real generated slots so the warning cannot disagree with what
+   * employees are actually offered.
+   *
+   * Advisory only: the hours are already saved by the time this runs, and a
+   * coach may well intend to move those meetings. Returns null when there is no
+   * calendar to check against, so the UI can say "not checked" rather than
+   * implying the window is clear.
+   */
+  private async findHourConflicts(coach: User): Promise<HourConflict[] | null> {
+    const windows = coach.coachingWeeklyHours ?? [];
+    if (windows.length === 0) return [];
+    if (!(await this.calendarService.isConnected(coach.id))) return null;
+
+    let slots: BookableSlot[];
+    try {
+      ({ slots } = await this.getBookableSlots(coach.id));
+    } catch (err) {
+      // Never let a calendar hiccup surface as a failed save — the hours are
+      // already committed, and the warning is a nicety.
+      this.logger.warn(
+        `Conflict scan failed for coach ${coach.id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+
+    const firstDay = utcToWallClock(new Date()).date;
+
+    return windows
+      .map((w) => {
+        const dates: string[] = [];
+        let occurrences = 0;
+        for (let i = 0; i < BOOKING_HORIZON_DAYS; i++) {
+          const day = addBusinessDays(firstDay, i);
+          if (utcToWallClock(wallClockToUtc(day, '12:00')).weekday !== w.day) {
+            continue;
+          }
+          occurrences++;
+          const yielded = slots.some(
+            (slot) =>
+              slot.availableDate === day &&
+              slot.startTime >= w.startTime &&
+              slot.startTime < w.endTime,
+          );
+          if (!yielded) dates.push(day);
+        }
+        return {
+          day: w.day,
+          startTime: w.startTime,
+          endTime: w.endTime,
+          occurrences,
+          conflictingDates: dates,
+        };
+      })
+      .filter((c) => c.conflictingDates.length > 0);
   }
 
   // ─── Bookable slots (Outlook is the source of truth) ───────────────────────────
