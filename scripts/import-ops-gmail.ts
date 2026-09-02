@@ -4,6 +4,15 @@ import { UserRole, EmployeeType, EmployeeStatus, Gender, AuthProvider } from '..
 import * as XLSX from 'xlsx';
 import * as bcrypt from 'bcrypt';
 
+/** First address in a spreadsheet cell, whitespace stripped. */
+function cleanEmail(value: unknown): string | undefined {
+  const first = String(value ?? '')
+    .split(/[\s,;]+/)
+    .map((part) => part.trim())
+    .find(Boolean);
+  return first || undefined;
+}
+
 async function importOpsGmail() {
   try {
     await AppDataSource.initialize();
@@ -33,8 +42,12 @@ async function importOpsGmail() {
           where: { employeeId: employee['Employee ID'] },
         });
 
-        // Determine email - prefer Active Email Address, fallback to Email
-        const email = employee['Active Email Address'] || employee['Email'];
+        // Determine email - prefer Active Email Address, fallback to Email.
+        // Cleaned: the sheet carries trailing spaces and tabs, and storing those
+        // raw breaks login (an exact-match lookup) and every SES send the user
+        // is BCC'd on.
+        const email =
+          cleanEmail(employee['Active Email Address']) || cleanEmail(employee['Email']);
 
         if (existingUser) {
           // Update email if different
