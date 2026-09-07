@@ -164,6 +164,55 @@ export class TokenRequestsService {
   }
 
   /**
+   * Learning subsidy is capped per employee per *year*, not per request.
+   * The per-request `maxTokens` check is not enough on its own: two separate
+   * requests (3 + 1) each pass it while adding up to 4 for the year, and the
+   * general balance check can't catch it because the annual allocation (6) is
+   * larger than the subsidy cap (3).
+   *
+   * Counts everything not cancelled/rejected, so requests still in the approval
+   * pipeline hold their share of the cap — same reasoning as getCommittedTokens.
+   */
+  private async assertLearningSubsidyYearlyCap(
+    employeeId: string,
+    year: number,
+    required: number,
+    maxTokens: number,
+    subsidyPerToken: number,
+    excludeRequestId?: string,
+  ): Promise<void> {
+    const qb = this.requestRepo
+      .createQueryBuilder('r')
+      .select('COALESCE(SUM(r."tokenCost"), 0)', 'total')
+      .where('r."employeeId" = :employeeId', { employeeId })
+      .andWhere('r.year = :year', { year })
+      .andWhere('r.type = :type', {
+        type: DevelopmentOptionType.LEARNING_SUBSIDY,
+      })
+      .andWhere('r.status NOT IN (:...excluded)', {
+        excluded: [RequestStatus.CANCELLED, RequestStatus.REJECTED],
+      });
+
+    // On resubmit the request being edited is already stored — counting its old
+    // cost as well as the new one would reject valid edits.
+    if (excludeRequestId) {
+      qb.andWhere('r.id != :excludeRequestId', { excludeRequestId });
+    }
+
+    const row = await qb.getRawOne<{ total: string }>();
+    const alreadyUsed = Number(row?.total ?? 0);
+    if (alreadyUsed + required <= maxTokens) return;
+
+    const left = Math.max(maxTokens - alreadyUsed, 0);
+    const peso = (t: number) => `₱${(t * subsidyPerToken).toLocaleString()}`;
+    throw new BadRequestException(
+      left === 0
+        ? `You have already used your full ${year} learning subsidy allowance of ${maxTokens} tokens (${peso(maxTokens)}).`
+        : `This request would exceed your ${year} learning subsidy allowance of ${maxTokens} tokens (${peso(maxTokens)}). You have ${left} token${left !== 1 ? 's' : ''} (${peso(left)}) left this year.`,
+    );
+  }
+
+  /**
    * Resolve the manager for an employee.
    * Uses immediateSupervisorId if that user has approver role,
    * otherwise falls back to any admin.
@@ -479,6 +528,13 @@ export class TokenRequestsService {
         `Subsidy amount ₱${dto.subsidyAmount} exceeds the maximum of ₱${maxTokens * subsidyPerToken}`,
       );
     }
+    await this.assertLearningSubsidyYearlyCap(
+      employeeId,
+      year,
+      tokenCost,
+      maxTokens,
+      subsidyPerToken,
+    );
     await this.assertSpendableBalance(employeeId, year, balance.remaining, tokenCost);
 
     return this.saveAndNotify({
@@ -1350,6 +1406,14 @@ export class TokenRequestsService {
         }
         // Re-check balance with new cost
         const year = new Date().getFullYear();
+        await this.assertLearningSubsidyYearlyCap(
+          employeeId,
+          year,
+          newTokenCost,
+          maxTokens,
+          subsidyPerToken,
+          request.id,
+        );
         const balance = await this.tokenBalancesService.getBalance(employeeId, year);
         if (balance.remaining < newTokenCost) {
           throw new BadRequestException(
