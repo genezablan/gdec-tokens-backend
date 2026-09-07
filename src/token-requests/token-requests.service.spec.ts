@@ -208,3 +208,66 @@ describe('TokenRequestsService — HR requirement removed mid-flight', () => {
     expect(tokenBalancesService.deductTokens).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Learning subsidy is capped per year, not just per request. Two requests of
+ * 3 + 1 tokens each satisfy the per-request `maxTokens` check while totalling 4
+ * for the year, and the general balance check cannot catch it because the annual
+ * allocation (6) is larger than the subsidy cap (3). That combination reached
+ * production, so the aggregate check is pinned down here.
+ */
+describe('TokenRequestsService — learning subsidy yearly cap', () => {
+  /** Query-builder stub for the SUM(tokenCost) aggregate. */
+  const rawQbStub = (total: number) => {
+    const qb: Record<string, unknown> = {};
+    for (const m of ['where', 'andWhere', 'select']) qb[m] = jest.fn(() => qb);
+    qb.getRawOne = jest.fn().mockResolvedValue({ total: String(total) });
+    return qb;
+  };
+
+  /** Cap check with `alreadyUsed` tokens on the year, asking for `required` more. */
+  const callCap = (alreadyUsed: number, required: number, exclude?: string) => {
+    const { service, requestRepo } = buildService();
+    const qb = rawQbStub(alreadyUsed);
+    requestRepo.createQueryBuilder = jest.fn(() => qb);
+    const run = () =>
+      (
+        service as unknown as {
+          assertLearningSubsidyYearlyCap: (
+            ...a: unknown[]
+          ) => Promise<void>;
+        }
+      ).assertLearningSubsidyYearlyCap(EMPLOYEE, 2026, required, 3, 1000, exclude);
+    return { qb, run };
+  };
+
+  it('allows a request that lands exactly on the cap', async () => {
+    await expect(callCap(2, 1).run()).resolves.toBeUndefined();
+  });
+
+  it('rejects the request that would push the year total past the cap', async () => {
+    await expect(callCap(3, 1).run()).rejects.toThrow(
+      /already used your full 2026 learning subsidy allowance of 3 tokens/,
+    );
+  });
+
+  it('tells the employee how much of the allowance is actually left', async () => {
+    await expect(callCap(2, 3).run()).rejects.toThrow(/1 token \(₱1,000\) left this year/);
+  });
+
+  it('counts in-flight requests, so a pending one holds its share', async () => {
+    const { qb, run } = callCap(0, 1);
+    await run();
+    expect(qb.andWhere).toHaveBeenCalledWith('r.status NOT IN (:...excluded)', {
+      excluded: [RequestStatus.CANCELLED, RequestStatus.REJECTED],
+    });
+  });
+
+  it('excludes the request being edited so a resubmit is not double-counted', async () => {
+    const { qb, run } = callCap(0, 3, 'req-uuid');
+    await run();
+    expect(qb.andWhere).toHaveBeenCalledWith('r.id != :excludeRequestId', {
+      excludeRequestId: 'req-uuid',
+    });
+  });
+});
