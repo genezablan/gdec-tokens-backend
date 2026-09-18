@@ -321,6 +321,9 @@ export class ChatToolsService {
         createdAt: Date.now(),
       });
     }
+    this.logger.log(
+      `Admin ${adminId} ${isRepeat ? 're-proposed (kept earlier proposal)' : 'proposed'} edit to user ${target.id}: ${JSON.stringify(effective)}`,
+    );
     return {
       status: 'awaiting_confirmation',
       employee: `${target.fullName} (${target.employeeId})`,
@@ -338,6 +341,9 @@ export class ChatToolsService {
   async confirmEmployeeUpdate(adminId: string, turnId: string) {
     const pending = this.pendingUpdates.get(adminId);
     if (!pending || Date.now() - pending.createdAt > PENDING_TTL_MS) {
+      this.logger.warn(
+        `Admin ${adminId} confirm refused: ${pending ? 'proposal expired' : 'no pending proposal'}`,
+      );
       this.pendingUpdates.delete(adminId);
       return {
         error:
@@ -345,6 +351,9 @@ export class ChatToolsService {
       };
     }
     if (pending.turnId === turnId) {
+      this.logger.warn(
+        `Admin ${adminId} confirm refused: proposed in this same chat turn`,
+      );
       return {
         error:
           'The admin has not confirmed yet. Show the proposed changes and wait for their reply before confirming.',
