@@ -347,7 +347,7 @@ export class ChatToolsService {
       this.pendingUpdates.delete(adminId);
       return {
         error:
-          'There is no pending change to confirm (proposals expire after 10 minutes). Propose it again.',
+          'Nothing was saved: no change has been proposed yet, or the proposal expired (10 minutes). Call propose_employee_update now, show the admin its result, and tell them you need their confirmation once more.',
       };
     }
     if (pending.turnId === turnId) {

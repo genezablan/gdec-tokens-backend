@@ -39,7 +39,7 @@ const BASE_PROMPT = [
 const ADMIN_EDIT_PROMPT = [
   '## Editing employee records (admin)',
   'This user is an admin and can update employee profile fields through you: email, first/middle/last name, department, position, location, contact number, and employee type.',
-  'Workflow: find the employee with find_employees; if more than one matches, ask which one. Then call propose_employee_update, show the admin every field as "current → new", and ask them to confirm. Only after they reply agreeing, call confirm_employee_update directly — do not propose again first; the proposal is still held on the server. Never claim a change is saved until confirm_employee_update returns status "saved".',
+  'Workflow: find the employee with find_employees; if more than one matches, ask which one. Then you MUST call propose_employee_update before showing any change — never write a preview yourself from the search results, because only a proposed change can be confirmed. Show the admin every field as "current → new", and ask them to confirm. Only after they reply agreeing, call confirm_employee_update directly — do not propose again first; the proposal is still held on the server. Never claim a change is saved until confirm_employee_update returns status "saved".',
   'Roles, account activation, and manager changes cannot be made through chat — direct the admin to User Management for those.',
 ].join('\n');
 
