@@ -1,11 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { ILike, In, Not, Repository } from 'typeorm';
 import { TokenBalance } from '../entities/token-balance.entity';
 import { TokenRequest } from '../entities/token-request.entity';
 import { CoachingSession } from '../entities/coaching-session.entity';
 import { User } from '../entities/user.entity';
-import { CoachingSessionStatus, RequestStatus } from '../common/enums';
+import {
+  CoachingSessionStatus,
+  EmployeeType,
+  RequestStatus,
+} from '../common/enums';
 
 export type PlatformMetric =
   | 'requests_by_status'
@@ -15,15 +19,51 @@ export type PlatformMetric =
   | 'top_coaches'
   | 'token_usage';
 
+/** Profile fields an admin may change through chat. Roles, activation and manager are deliberately excluded. */
+export interface EmployeeProfileChanges {
+  email?: string;
+  firstName?: string;
+  middleName?: string | null;
+  lastName?: string;
+  department?: string;
+  position?: string | null;
+  location?: string | null;
+  contact?: string | null;
+  employeeType?: EmployeeType;
+}
+
+type ProfileField = keyof EmployeeProfileChanges;
+
+interface PendingUpdate {
+  targetUserId: string;
+  changes: EmployeeProfileChanges;
+  /** Values at proposal time — the update is refused if the record moved since. */
+  before: Record<string, unknown>;
+  /** Chat request that proposed it; confirmation must come from a later one. */
+  turnId: string;
+  createdAt: number;
+}
+
+const PENDING_TTL_MS = 10 * 60 * 1000;
+
 /**
- * Read-only database queries exposed to the AI chat as tools.
+ * Database queries exposed to the AI chat as tools.
  *
  * Personal queries are always scoped to the requesting user's id — the model
  * never chooses whose data to read. Platform-wide aggregates return counts
  * only (no per-employee rows) and the caller (ChatService) gates them by role.
+ *
+ * The only writes are admin profile edits, which are two-phase: a proposal is
+ * held in memory per admin, and can only be applied by a *later* chat request
+ * — so the model cannot propose and apply in one turn; the admin must reply
+ * in between. In-memory is fine because the backend runs as a single PM2
+ * instance; a restart just drops unconfirmed proposals.
  */
 @Injectable()
 export class ChatToolsService {
+  private readonly logger = new Logger(ChatToolsService.name);
+  private readonly pendingUpdates = new Map<string, PendingUpdate>();
+
   constructor(
     @InjectRepository(TokenBalance)
     private readonly balances: Repository<TokenBalance>,
@@ -200,5 +240,166 @@ export class ChatToolsService {
         return { year: y, ...totals };
       }
     }
+  }
+
+  /** Admin lookup by name, email, or employee ID. Role-gated by ChatService. */
+  async findEmployees(query: string) {
+    const q = `%${query.trim()}%`;
+    const matches = await this.users
+      .createQueryBuilder('u')
+      .where(
+        `concat_ws(' ', u.firstName, u.middleName, u.lastName) ILIKE :q
+         OR concat_ws(' ', u.firstName, u.lastName) ILIKE :q
+         OR u.email ILIKE :q
+         OR u.employeeId ILIKE :q`,
+        { q },
+      )
+      .orderBy('u.lastName', 'ASC')
+      .addOrderBy('u.firstName', 'ASC')
+      .take(10)
+      .getMany();
+    return {
+      showing: matches.length,
+      employees: matches.map((u) => this.profileSnapshot(u)),
+    };
+  }
+
+  /** Stage a profile edit for the admin to confirm. Nothing is written here. */
+  async proposeEmployeeUpdate(
+    adminId: string,
+    turnId: string,
+    targetUserId: string,
+    changes: EmployeeProfileChanges,
+  ) {
+    const target = await this.users.findOne({ where: { id: targetUserId } });
+    if (!target) return { error: 'No employee found with that id.' };
+
+    const effective: EmployeeProfileChanges = {};
+    const before: Record<string, unknown> = {};
+    for (const [field, value] of Object.entries(changes) as [
+      ProfileField,
+      unknown,
+    ][]) {
+      if (value === undefined || target[field] === value) continue;
+      (effective as Record<string, unknown>)[field] = value;
+      before[field] = target[field] ?? null;
+    }
+    if (!Object.keys(effective).length) {
+      return {
+        error:
+          'Those values already match the current record — nothing to change.',
+      };
+    }
+
+    if (effective.email) {
+      const taken = await this.users.findOne({
+        where: { email: ILike(effective.email), id: Not(target.id) },
+      });
+      if (taken) {
+        return {
+          error: `The email ${effective.email} already belongs to ${taken.fullName}.`,
+        };
+      }
+    }
+
+    this.pendingUpdates.set(adminId, {
+      targetUserId: target.id,
+      changes: effective,
+      before,
+      turnId,
+      createdAt: Date.now(),
+    });
+    return {
+      status: 'awaiting_confirmation',
+      employee: `${target.fullName} (${target.employeeId})`,
+      changes: Object.keys(effective).map((field) => ({
+        field,
+        from: before[field],
+        to: effective[field as ProfileField],
+      })),
+      instruction:
+        'Nothing has been saved. Show these changes to the admin and ask them to confirm. Only call confirm_employee_update after they reply agreeing.',
+    };
+  }
+
+  /** Apply the admin's staged edit — only from a later chat request than the proposal. */
+  async confirmEmployeeUpdate(adminId: string, turnId: string) {
+    const pending = this.pendingUpdates.get(adminId);
+    if (!pending || Date.now() - pending.createdAt > PENDING_TTL_MS) {
+      this.pendingUpdates.delete(adminId);
+      return {
+        error:
+          'There is no pending change to confirm (proposals expire after 10 minutes). Propose it again.',
+      };
+    }
+    if (pending.turnId === turnId) {
+      return {
+        error:
+          'The admin has not confirmed yet. Show the proposed changes and wait for their reply before confirming.',
+      };
+    }
+
+    const target = await this.users.findOne({
+      where: { id: pending.targetUserId },
+    });
+    if (!target) {
+      this.pendingUpdates.delete(adminId);
+      return { error: 'That employee no longer exists.' };
+    }
+    const stale = Object.entries(pending.before).some(
+      ([field, value]) => (target[field as ProfileField] ?? null) !== value,
+    );
+    if (stale) {
+      this.pendingUpdates.delete(adminId);
+      return {
+        error:
+          'The record changed after the proposal was made. Look it up again and re-propose.',
+      };
+    }
+
+    if (pending.changes.email) {
+      const taken = await this.users.findOne({
+        where: { email: ILike(pending.changes.email), id: Not(target.id) },
+      });
+      if (taken) {
+        this.pendingUpdates.delete(adminId);
+        return {
+          error: `The email ${pending.changes.email} now belongs to ${taken.fullName}.`,
+        };
+      }
+    }
+
+    Object.assign(target, pending.changes);
+    await this.users.save(target);
+    this.pendingUpdates.delete(adminId);
+
+    this.logger.log(
+      `Admin ${adminId} updated user ${target.id} (${target.employeeId}) via chat: ` +
+        Object.keys(pending.changes)
+          .map(
+            (f) =>
+              `${f}: ${JSON.stringify(pending.before[f])} -> ${JSON.stringify(pending.changes[f as ProfileField])}`,
+          )
+          .join('; '),
+    );
+    return { status: 'saved', employee: this.profileSnapshot(target) };
+  }
+
+  private profileSnapshot(u: User) {
+    return {
+      id: u.id,
+      employeeId: u.employeeId,
+      name: u.fullName,
+      email: u.email,
+      firstName: u.firstName,
+      middleName: u.middleName ?? null,
+      lastName: u.lastName,
+      department: u.department,
+      position: u.position,
+      location: u.location,
+      contact: u.contact ?? null,
+      employeeType: u.employeeType,
+      isActive: u.isActive,
+    };
   }
 }
