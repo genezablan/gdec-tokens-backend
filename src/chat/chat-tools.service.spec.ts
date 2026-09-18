@@ -101,6 +101,46 @@ describe('ChatToolsService admin profile edits', () => {
     ).toMatchObject({ status: 'saved' });
   });
 
+  it('lets an identical re-proposal in the confirming turn still confirm', async () => {
+    const { service, current } = buildService();
+    await service.proposeEmployeeUpdate(
+      ADMIN_ID,
+      'turn-1',
+      TARGET_ID,
+      NEW_EMAIL,
+    );
+
+    // Admin says "yes"; the model re-proposes, then confirms, all in turn 2.
+    await service.proposeEmployeeUpdate(
+      ADMIN_ID,
+      'turn-2',
+      TARGET_ID,
+      NEW_EMAIL,
+    );
+    expect(
+      await service.confirmEmployeeUpdate(ADMIN_ID, 'turn-2'),
+    ).toMatchObject({ status: 'saved' });
+    expect(current().email).toBe(NEW_EMAIL.email);
+  });
+
+  it('treats a different re-proposal as new, needing another reply', async () => {
+    const { service, users } = buildService();
+    await service.proposeEmployeeUpdate(
+      ADMIN_ID,
+      'turn-1',
+      TARGET_ID,
+      NEW_EMAIL,
+    );
+    await service.proposeEmployeeUpdate(ADMIN_ID, 'turn-2', TARGET_ID, {
+      email: 'other@greatdealscorp.com',
+    });
+
+    expect(
+      await service.confirmEmployeeUpdate(ADMIN_ID, 'turn-2'),
+    ).toHaveProperty('error');
+    expect(users.save).not.toHaveBeenCalled();
+  });
+
   it('refuses when nothing was proposed, or another admin proposed it', async () => {
     const { service, users } = buildService();
     expect(

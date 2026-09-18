@@ -302,13 +302,25 @@ export class ChatToolsService {
       }
     }
 
-    this.pendingUpdates.set(adminId, {
-      targetUserId: target.id,
-      changes: effective,
-      before,
-      turnId,
-      createdAt: Date.now(),
-    });
+    // The chat history is text-only, so on the admin's "yes" the model can't
+    // see its earlier tool call and often re-proposes before confirming. An
+    // identical re-proposal keeps the original entry — the admin has already
+    // seen and replied to it — or confirmation would be blocked as same-turn.
+    const existing = this.pendingUpdates.get(adminId);
+    const isRepeat =
+      existing &&
+      Date.now() - existing.createdAt <= PENDING_TTL_MS &&
+      existing.targetUserId === target.id &&
+      JSON.stringify(existing.changes) === JSON.stringify(effective);
+    if (!isRepeat) {
+      this.pendingUpdates.set(adminId, {
+        targetUserId: target.id,
+        changes: effective,
+        before,
+        turnId,
+        createdAt: Date.now(),
+      });
+    }
     return {
       status: 'awaiting_confirmation',
       employee: `${target.fullName} (${target.employeeId})`,
